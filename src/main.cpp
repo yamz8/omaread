@@ -3,6 +3,7 @@
 #include <QGuiApplication>
 #include <QDir>
 #include <QIcon>
+#include <QKeyEvent>
 #include <QKeySequence>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -88,15 +89,34 @@ int main(int argc, char *argv[]) {
             window->resize(size[0].toInt(), size[1].toInt());
         const QStringList keys = qEnvironmentVariable("OMARCHY_LOOK_KEYS").split(' ', Qt::SkipEmptyParts);
         for (int i = 0; i < keys.size(); ++i) {
-            QTimer::singleShot(800 + i * 300, &app, [&engine, key = QKeySequence(keys[i])] {
-                for (QObject *shortcut : engine.rootObjects().constFirst()->findChildren<QObject *>()) {
-                    if (qstrcmp(shortcut->metaObject()->className(), "QQuickShortcut") == 0
-                        && shortcut->property("enabled").toBool()
-                        && QKeySequence(shortcut->property("sequence").toString()) == key) {
-                        QMetaObject::invokeMethod(shortcut, "activated");
-                        break;
+            QTimer::singleShot(800 + i * 300, &app, [&engine, name = keys[i]] {
+                auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+                const QKeySequence key(name);
+                for (QObject *shortcut : window->findChildren<QObject *>()) {
+                    if (qstrcmp(shortcut->metaObject()->className(), "QQuickShortcut") != 0
+                        || !shortcut->property("enabled").toBool())
+                        continue;
+                    QVariantList bound = shortcut->property("sequences").toList();
+                    bound.append(shortcut->property("sequence"));
+                    for (const QVariant &sequence : bound) {
+                        const QKeySequence match = sequence.typeId() == QMetaType::Int
+                            ? QKeySequence(QKeySequence::StandardKey(sequence.toInt()))
+                            : QKeySequence(sequence.toString());
+                        if (!match.isEmpty() && match == key) {
+                            QMetaObject::invokeMethod(shortcut, "activated");
+                            return;
+                        }
                     }
                 }
+                // Not a shortcut: typed into whatever has the keyboard, such as a search field.
+                if (key.isEmpty())
+                    return;
+                const QKeyCombination combination = key[0];
+                const QString text = name.size() == 1 ? name : QString();
+                QKeyEvent press(QEvent::KeyPress, combination.key(), combination.keyboardModifiers(), text);
+                QKeyEvent release(QEvent::KeyRelease, combination.key(), combination.keyboardModifiers(), text);
+                QCoreApplication::sendEvent(window, &press);
+                QCoreApplication::sendEvent(window, &release);
             });
         }
         const int delay = qEnvironmentVariableIsSet("OMARCHY_LOOK_DELAY_MS") ? qEnvironmentVariableIntValue("OMARCHY_LOOK_DELAY_MS") : 1500;

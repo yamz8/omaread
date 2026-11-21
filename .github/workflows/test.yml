@@ -24,10 +24,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install the package's dependencies
-        # The package lives in omarchy-pkgs, so its PKGBUILD is the one list of what the app needs and CI reads it rather than keeping a copy.
+        # Once the package is in omarchy-pkgs, its PKGBUILD is the one list of what the app needs and CI reads it. Until then, the list below stands in for it.
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/omacom/omarchy-pkgs/master/pkgbuilds/${{ github.event.repository.name }}/PKGBUILD" -o "$RUNNER_TEMP/PKGBUILD"
-          source "$RUNNER_TEMP/PKGBUILD"
+          if curl -fsSL "https://raw.githubusercontent.com/omacom/omarchy-pkgs/master/pkgbuilds/${{ github.event.repository.name }}/PKGBUILD" -o "$RUNNER_TEMP/PKGBUILD"; then
+            source "$RUNNER_TEMP/PKGBUILD"
+          else
+            depends=(qt6-base qt6-declarative qt6-wayland qt6-svg qt6-imageformats poppler-qt6 libarchive xdg-desktop-portal hicolor-icon-theme)
+            makedepends=(cmake)
+            checkdepends=(noto-fonts qpdf)
+          fi
           deps=("${depends[@]}" "${makedepends[@]}" "${checkdepends[@]}")
           pacman -S --noconfirm --needed base-devel cmake dbus "${deps[@]%%[<>=]*}"
 

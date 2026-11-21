@@ -9,7 +9,20 @@ The library remembers every book you've opened and where you stopped reading, so
 Open a book from the library, with `O`, by dropping it on the window, or from the command line:
 
 ```sh
-omaread book.epub
+omaread open book.epub
+```
+
+Search the whole book with `/`, select words with the mouse and copy them with `Ctrl+C`, follow links inside the book, and read PDFs and comics two pages at a time with `D`. A PDF locked with a password asks for it, and never keeps it. The text size follows the desktop's, set in `~/.config/omarchy/shell.toml`.
+
+## Commands
+
+The same reading works without a window, for scripts and coding agents. Each command takes `--json`, and `--password` for a locked PDF.
+
+```sh
+omaread info book.epub              # title, author, format, sections and contents
+omaread text book.epub --section 3  # the words of one section, or of the whole book
+omaread search manual.pdf vec3      # where words appear, section by section
+omaread skill install               # teach coding agents to use these commands
 ```
 
 ## Keys
@@ -22,9 +35,14 @@ omaread book.epub
 | `↓` `↑` `J` `K` | Scroll |
 | `]` `[` | Next or previous section |
 | `Home` `End` | First or last section |
+| `G` | Go to a page or section |
 | `T` | Table of contents |
+| `/` `Ctrl+F` | Find in the book |
+| `N` `Shift+N` | Next or previous match |
+| `Ctrl+C` | Copy the selected words |
 | `+` `−` `0` | Larger, smaller, or reset text and pages |
 | `W` | Fit pages to the width or the window |
+| `D` | One page or two side by side |
 | `I` | Color pages like the theme |
 | `F` | Full screen |
 | `Esc` | Back to the library |
@@ -34,7 +52,7 @@ omaread book.epub
 
 ## Building
 
-You need Qt 6 (base, declarative, svg, wayland, and Qt Pdf from `qt6-webengine`), libarchive, and CMake.
+You need Qt 6 (base, declarative, svg, wayland, imageformats), poppler-qt6, libarchive, and CMake, all of which Omarchy already installs. The tests also use `qpdf`.
 
 ```sh
 bin/build    # cmake into build/
@@ -44,11 +62,15 @@ cmake --install build --prefix ~/.local   # put it in the app launcher
 
 ## How it reads
 
-- **PDF**: drawn page by page with Qt Pdf, along with its outline.
-- **EPUB**: each chapter is laid out as text in the theme's colors and your text size. The book's own colors and fonts are left out, and its images are scaled to fit. Links between chapters are followed inside the reader. The table of contents comes from the EPUB 3 nav document, or from the EPUB 2 NCX.
+- **PDF**: drawn page by page with poppler, as Signed draws them, along with its outline, links and words to search and copy.
+- **EPUB**: each chapter is laid out as text in the theme's colors and your text size. The book's own colors and fonts are left out, and its images are scaled to fit. Links between chapters, and to places inside them, are followed inside the reader. The table of contents comes from the EPUB 3 nav document, or from the EPUB 2 NCX.
 - **Comics**: the images in a ZIP, RAR, 7z or tar archive, in page-number order.
 - **Markdown**: one section for each first- and second-level heading, and those headings make up the table of contents.
 - **Text**: split into sections of about 20,000 characters, always between paragraphs.
+
+## Translations
+
+The interface is translated into Omarchy's 49 languages, in `src/i18n`. `en.json` lists every string, and the tests check each catalog against it. When strings change, `scripts/i18n-sync.py` and its workflow bring the other languages up to date.
 
 ## License
 

@@ -262,6 +262,7 @@ ApplicationWindow {
 
                         Label {
                             Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignLeft
                             text: qsTr("Library")
                             font.pixelSize: win.uiSize * 2
                             font.bold: true
@@ -303,8 +304,11 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     spacing: 2
 
+                                    // Explicit alignments, so mirroring moves them in a
+                                    // right-to-left language whatever the title's script.
                                     Label {
                                         Layout.fillWidth: true
+                                        horizontalAlignment: Text.AlignLeft
                                         text: row.modelData.title
                                         font.pixelSize: Math.round(win.uiSize * 8 / 7)
                                         font.bold: true
@@ -313,6 +317,7 @@ ApplicationWindow {
                                     }
                                     Label {
                                         Layout.fillWidth: true
+                                        horizontalAlignment: Text.AlignLeft
                                         text: row.modelData.exists
                                               ? (row.modelData.author ? row.modelData.author + " · " : "") + row.modelData.fileName
                                               : qsTr("Missing: %1").arg(row.modelData.fileName)
@@ -729,6 +734,7 @@ ApplicationWindow {
                         anchors.leftMargin: 12 + 18 * Math.min(chapter.modelData.depth, 4)
                         anchors.rightMargin: 12
                         verticalAlignment: Text.AlignVCenter
+                        horizontalAlignment: Text.AlignLeft
                         text: chapter.modelData.title
                         font.bold: chapter.index === backend.tocIndex
                         color: chapter.index === backend.tocIndex ? theme.accent : theme.foreground
