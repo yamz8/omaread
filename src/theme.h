@@ -10,7 +10,7 @@
 #include <QVariantMap>
 
 // Follows the Omarchy theme live: its whole palette, whether it is light or
-// dark, and Hyprland's window rounding as radius.
+// dark, Hyprland's window rounding as radius, and the desktop's text size.
 class Theme : public QObject {
     Q_OBJECT
     Q_PROPERTY(QColor accent READ accent NOTIFY changed)
@@ -20,6 +20,9 @@ class Theme : public QObject {
     Q_PROPERTY(QVariantMap colors READ colors NOTIFY changed)
     Q_PROPERTY(bool light READ light NOTIFY changed)
     Q_PROPERTY(int radius READ radius NOTIFY changed)
+    // The desktop's text size in px, as `omarchy display text size` sets it
+    // (12 px by default, the terminals' 9 pt).
+    Q_PROPERTY(int textSize READ textSize NOTIFY changed)
 
 public:
     // Tests pass a temp directory, a fake hyprctl, and their own event socket.
@@ -34,6 +37,10 @@ public:
     QVariantMap colors() const;
     bool light() const { return m_light; }
     int radius() const { return m_radius; }
+    int textSize() const { return m_textSize; }
+
+    // `base-size` under `[font]` in a shell.toml, or 0 when it isn't set.
+    static int readBaseSize(const QString &path);
 
     struct Palette {
         QHash<QString, QColor> colors;
@@ -50,6 +57,8 @@ private:
     void refreshRounding();
 
     QString m_directory;
+    QString m_shellConfig;
+    int m_textSize = 12;
     QHash<QString, QColor> m_colors;
     bool m_light = false;
     QFileSystemWatcher m_watcher;

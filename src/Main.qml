@@ -13,6 +13,8 @@ ApplicationWindow {
     visible: true
     title: backend.open ? backend.title + " — Omaread" : "Omaread"
     color: theme.background
+    // The interface follows the desktop's text size: 14 px at its default 12.
+    font.pixelSize: Math.round(theme.textSize * 7 / 6)
 
     Material.theme: theme.light ? Material.Light : Material.Dark
     Material.accent: theme.accent
@@ -21,41 +23,67 @@ ApplicationWindow {
 
     readonly property bool rightToLeft: Qt.application.layoutDirection === Qt.RightToLeft
     readonly property color muted: Qt.rgba(theme.foreground.r, theme.foreground.g, theme.foreground.b, 0.6)
-    // Single-key shortcuts rest while a popup has the keyboard.
-    readonly property bool busy: help.opened || contents.opened
-    readonly property bool reading: backend.open && !busy
-    readonly property bool browsing: !backend.open && !busy
+    readonly property int uiSize: font.pixelSize
+    // The reading text, as a multiple of the desktop's text size.
+    readonly property int readingSize: Math.round(theme.textSize * backend.textScale)
 
-    // How a page is drawn: fitted whole into the window, or across its width,
+    // Single-key shortcuts rest while a popup or the search field has the keyboard.
+    readonly property bool busy: help.opened || contents.opened || goDialog.opened || passwordDialog.opened
+                                 || findField.activeFocus
+    readonly property bool reading: backend.open && !busy && settled
+    readonly property bool browsing: !backend.open && !busy && settled
+
+    // Hyprland sizes a new window once it's on screen, so the first frames
+    // are laid out at the size asked for and then again at the real one. The
+    // contents stay hidden until that size is in, or until it's clear none is
+    // coming, so they first appear where they'll stay.
+    property bool settled: false
+    property bool drawn: false
+    onFrameSwapped: if (!drawn) { drawn = true; settleTimer.start() }
+    onWidthChanged: if (drawn) settled = true
+    onHeightChanged: if (drawn) settled = true
+    Timer { id: settleTimer; interval: 150; onTriggered: win.settled = true }
+
+    // How pages are drawn: fitted whole into the window, or across its width,
     // and then scaled by zoom.
     property bool fitWidth: false
     property real zoom: 1
     // Set while the view is moved to the saved place, so that move isn't
     // taken for the reader scrolling.
     property bool restoring: false
+    property bool finding: false
+    property string toast: ""
+
+    readonly property int step: backend.paged && backend.spread ? 2 : 1
+    readonly property var shownPages: !backend.paged ? []
+        : backend.spread && backend.section + 1 < backend.sectionCount ? [backend.section, backend.section + 1]
+        : [backend.section]
+    readonly property string tint: backend.tintPages
+        ? "/" + String(theme.background).slice(1, 7) + "/" + String(theme.foreground).slice(1, 7) : ""
 
     function number(n) { return Number(n).toLocaleString(Qt.locale(), 'f', 0) }
     function percent(p) { return qsTr("%1%").arg(number(Math.round(p * 100))) }
+    function aspect(page) { return backend.aspects[page] || 0.7071 }
 
     // One screen on, overlapping a little so no line is lost; at the end of a
     // section, the start of the next.
     function forward() {
         if (view.contentY + view.height >= view.contentHeight - 2) {
-            if (backend.section < backend.sectionCount - 1)
-                jump(backend.section + 1, 0)
+            if (backend.section + step < backend.sectionCount)
+                jump(backend.section + step, 0)
         } else {
-            view.contentY = Math.min(view.contentY + step(), view.contentHeight - view.height)
+            view.contentY = Math.min(view.contentY + screenStep(), view.contentHeight - view.height)
         }
     }
     function backward() {
         if (view.contentY <= 1) {
             if (backend.section > 0)
-                jump(backend.section - 1, 1)
+                jump(Math.max(0, backend.section - step), 1)
         } else {
-            view.contentY = Math.max(0, view.contentY - step())
+            view.contentY = Math.max(0, view.contentY - screenStep())
         }
     }
-    function step() { return Math.max(40, view.height - 3 * backend.textSize) }
+    function screenStep() { return Math.max(40, view.height - 3 * readingSize) }
     function scroll(dy) {
         view.contentY = Math.max(0, Math.min(view.contentY + dy, view.contentHeight - view.height))
     }
@@ -69,46 +97,131 @@ ApplicationWindow {
         view.contentX = Math.max(0, (view.contentWidth - view.width) / 2)
         restoring = false
     }
+    // Brings a place in the text into view, a little below the top.
+    function reveal(y) {
+        view.contentY = Math.max(0, Math.min(y - 24, view.contentHeight - view.height))
+    }
+    function showTarget() {
+        if (backend.target >= 0 && !backend.paged)
+            reveal(prose.y + prose.positionToRectangle(backend.target).y)
+    }
+    // The current search match: selected in the text, or scrolled to on a page.
+    function showHit() {
+        if (backend.hitIndex < 0)
+            return
+        if (backend.paged) {
+            const hit = backend.pageHits.find(h => h.current)
+            const at = hit ? shownPages.indexOf(hit.page) : -1
+            const sheet = at >= 0 ? sheets.itemAt(at) : null
+            if (sheet) {
+                const y = spreadRow.y + hit.y * sheet.height
+                if (y < view.contentY || y > view.contentY + view.height - 40)
+                    reveal(y - view.height / 3)
+            }
+            return
+        }
+        const text = prose.getText(0, prose.length).toLowerCase()
+        const words = backend.query.toLowerCase()
+        let at = -1
+        for (let i = 0; i <= backend.hitOccurrence; ++i) {
+            at = text.indexOf(words, at + 1)
+            if (at < 0)
+                return
+        }
+        prose.select(at, at + words.length)
+        reveal(prose.y + prose.positionToRectangle(at).y - view.height / 3)
+    }
     function resize(by) {
         if (backend.paged)
             zoom = by === 0 ? 1 : Math.max(0.5, Math.min(4, zoom * (by > 0 ? 1.2 : 1 / 1.2)))
         else
-            backend.textSize = by === 0 ? 20 : backend.textSize + 2 * by
+            backend.textScale = by === 0 ? 1.5 : Math.round((backend.textScale + 0.1 * by) * 10) / 10
+    }
+    function copy() {
+        if (prose.selectedText !== "") {
+            backend.copyText(prose.selectedText)
+            say(qsTr("Copied"))
+            return
+        }
+        for (let i = 0; i < sheets.count; ++i) {
+            const sheet = sheets.itemAt(i)
+            if (sheet && sheet.hasSelection) {
+                const area = sheet.selected
+                say(backend.copyPageText(sheet.page, area.x, area.y, area.width, area.height)
+                    ? qsTr("Copied") : qsTr("There are no words there to copy"))
+                return
+            }
+        }
+    }
+    function clearSelections() {
+        prose.deselect()
+        for (let i = 0; i < sheets.count; ++i)
+            if (sheets.itemAt(i))
+                sheets.itemAt(i).clearSelection()
+    }
+    function say(text) {
+        toast = text
+        toastTimer.restart()
+    }
+    function startFinding() {
+        finding = true
+        findField.text = backend.query
+        findField.selectAll()
+        findField.forceActiveFocus()
+    }
+    function stopFinding() {
+        finding = false
+        backend.clearSearch()
+        prose.deselect()
+        view.forceActiveFocus()
     }
     function leave() {
         if (backend.error !== "")
             backend.dismissError()
+        else if (finding)
+            stopFinding()
         else if (win.visibility === Window.FullScreen)
             win.showNormal()
         else if (backend.open)
             backend.close()
     }
 
+    Timer { id: toastTimer; interval: 1600; onTriggered: win.toast = "" }
+
     Connections {
         target: backend
-        function onBookChanged() { win.zoom = 1; Qt.callLater(win.restore) }
-        function onSectionChanged() { Qt.callLater(win.restore) }
+        function onBookChanged() { win.zoom = 1; win.finding = false; Qt.callLater(win.restore) }
+        function onSectionChanged() { win.clearSelections(); Qt.callLater(win.restore) }
+        function onTargetChanged() { Qt.callLater(win.showTarget) }
+        function onHitChanged() { Qt.callLater(win.showHit) }
+        function onPasswordChanged() { if (backend.passwordFor !== "") passwordDialog.open() }
     }
 
-    Shortcut { sequence: "?"; enabled: !contents.opened; onActivated: help.opened ? help.close() : help.open() }
+    Shortcut { sequence: "?"; enabled: !win.busy || help.opened; onActivated: help.opened ? help.close() : help.open() }
     Shortcut { sequence: "Q"; enabled: !win.busy; onActivated: Qt.quit() }
     Shortcut { sequence: "O"; enabled: !win.busy; onActivated: backend.pickFile() }
     Shortcut { sequence: "F"; enabled: !win.busy; onActivated: win.visibility === Window.FullScreen ? win.showNormal() : win.showFullScreen() }
     Shortcut { sequence: "Escape"; enabled: !win.busy; onActivated: win.leave() }
+    Shortcut { sequences: [StandardKey.Copy]; enabled: backend.open; onActivated: win.copy() }
 
     Shortcut { sequences: ["Space", "PgDown", "Right"]; enabled: win.reading; onActivated: win.forward() }
     Shortcut { sequences: ["Shift+Space", "PgUp", "Left"]; enabled: win.reading; onActivated: win.backward() }
     Shortcut { sequences: ["Down", "J"]; enabled: win.reading; onActivated: win.scroll(60) }
     Shortcut { sequences: ["Up", "K"]; enabled: win.reading; onActivated: win.scroll(-60) }
-    Shortcut { sequence: "]"; enabled: win.reading; onActivated: win.jump(backend.section + 1, 0) }
-    Shortcut { sequence: "["; enabled: win.reading; onActivated: win.jump(backend.section - 1, 0) }
+    Shortcut { sequence: "]"; enabled: win.reading; onActivated: win.jump(backend.section + win.step, 0) }
+    Shortcut { sequence: "["; enabled: win.reading; onActivated: win.jump(Math.max(0, backend.section - win.step), 0) }
     Shortcut { sequence: "Home"; enabled: win.reading; onActivated: win.jump(0, 0) }
     Shortcut { sequence: "End"; enabled: win.reading; onActivated: win.jump(backend.sectionCount - 1, 0) }
-    Shortcut { sequence: "T"; enabled: backend.open && !help.opened; onActivated: contents.opened ? contents.close() : contents.open() }
+    Shortcut { sequence: "T"; enabled: backend.open && (!win.busy || contents.opened); onActivated: contents.opened ? contents.close() : contents.open() }
+    Shortcut { sequence: "G"; enabled: win.reading; onActivated: goDialog.open() }
+    Shortcut { sequences: ["/", StandardKey.Find]; enabled: backend.open && settled && !help.opened && !contents.opened && !goDialog.opened; onActivated: win.startFinding() }
+    Shortcut { sequences: ["N", StandardKey.FindNext]; enabled: win.reading && backend.hitCount > 0; onActivated: backend.nextHit() }
+    Shortcut { sequences: ["Shift+N", StandardKey.FindPrevious]; enabled: win.reading && backend.hitCount > 0; onActivated: backend.previousHit() }
     Shortcut { sequences: ["+", "="]; enabled: win.reading; onActivated: win.resize(1) }
     Shortcut { sequence: "-"; enabled: win.reading; onActivated: win.resize(-1) }
     Shortcut { sequence: "0"; enabled: win.reading; onActivated: win.resize(0) }
-    Shortcut { sequence: "W"; enabled: win.reading && backend.paged; onActivated: { win.fitWidth = !win.fitWidth; win.zoom = 1 } }
+    Shortcut { sequence: "W"; enabled: win.reading && backend.paged; onActivated: { win.fitWidth = !win.fitWidth; win.zoom = 1; Qt.callLater(win.restore) } }
+    Shortcut { sequence: "D"; enabled: win.reading && backend.paged; onActivated: backend.spread = !backend.spread }
     Shortcut { sequence: "I"; enabled: win.reading && backend.paged; onActivated: backend.tintPages = !backend.tintPages }
 
     Shortcut { sequence: "Down"; enabled: win.browsing; onActivated: shelf.incrementCurrentIndex() }
@@ -122,6 +235,9 @@ ApplicationWindow {
         anchors.fill: parent
         LayoutMirroring.enabled: win.rightToLeft
         LayoutMirroring.childrenInherit: true
+        enabled: win.settled
+        opacity: win.settled ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 100 } }
 
         StackLayout {
             anchors.fill: parent
@@ -147,7 +263,7 @@ ApplicationWindow {
                         Label {
                             Layout.fillWidth: true
                             text: qsTr("Library")
-                            font.pixelSize: 28
+                            font.pixelSize: win.uiSize * 2
                             font.bold: true
                             elide: Text.ElideRight
                         }
@@ -173,7 +289,7 @@ ApplicationWindow {
                             required property int index
                             required property var modelData
                             width: ListView.view.width
-                            height: 64
+                            height: Math.round(win.uiSize * 4.6)
                             radius: Math.min(4, theme.radius)
                             color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
 
@@ -190,7 +306,7 @@ ApplicationWindow {
                                     Label {
                                         Layout.fillWidth: true
                                         text: row.modelData.title
-                                        font.pixelSize: 16
+                                        font.pixelSize: Math.round(win.uiSize * 8 / 7)
                                         font.bold: true
                                         elide: Text.ElideRight
                                         opacity: row.modelData.exists ? 1 : 0.5
@@ -230,7 +346,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         horizontalAlignment: Text.AlignHCenter
                         text: qsTr("Nothing to read yet")
-                        font.pixelSize: 28
+                        font.pixelSize: win.uiSize * 2
                         font.bold: true
                         wrapMode: Text.Wrap
                     }
@@ -270,11 +386,14 @@ ApplicationWindow {
                     id: view
                     objectName: "view"
                     anchors.fill: parent
-                    anchors.bottomMargin: statusBar.height
+                    anchors.bottomMargin: statusBar.height + (findBar.visible ? findBar.height : 0)
                     clip: true
+                    // The mouse selects words; the wheel, the touchpad and the
+                    // keys move through the book.
+                    acceptedButtons: Qt.NoButton
                     boundsBehavior: Flickable.StopAtBounds
-                    contentWidth: backend.paged ? Math.max(width, page.width + 2 * page.margin) : width
-                    contentHeight: backend.paged ? page.height + 2 * page.margin : prose.height + 2 * prose.margin
+                    contentWidth: backend.paged ? Math.max(width, spreadRow.width + 2 * spreadRow.margin) : width
+                    contentHeight: backend.paged ? spreadRow.height + 2 * spreadRow.margin : prose.height + 2 * prose.margin
                     ScrollBar.vertical: ScrollBar {}
                     ScrollBar.horizontal: ScrollBar {}
 
@@ -283,71 +402,147 @@ ApplicationWindow {
                     onContentHeightChanged: Qt.callLater(win.restore)
                     onHeightChanged: Qt.callLater(win.restore)
 
-                    // A paged book's page, fitted to the window and then zoomed.
-                    Image {
-                        id: page
-                        objectName: "page"
+                    // A paged book's page, or two side by side, fitted to the
+                    // window and then zoomed. Books keep their own reading
+                    // direction, whatever the interface's.
+                    Row {
+                        id: spreadRow
+                        objectName: "spread"
                         readonly property int margin: 16
-                        readonly property real aspect: backend.paged ? (backend.aspects[backend.section] || 0.7071) : 1
-                        readonly property real fitted: win.fitWidth
-                            ? view.width - 2 * margin
-                            : Math.min(view.width - 2 * margin, (view.height - 2 * margin) * aspect)
-                        readonly property string tint: backend.tintPages
-                            ? "/" + String(theme.background).slice(1, 7) + "/" + String(theme.foreground).slice(1, 7) : ""
+                        readonly property real aspects: win.shownPages.reduce((sum, page) => sum + win.aspect(page), 0) || 1
+                        readonly property real available: view.width - 2 * margin - spacing * Math.max(0, win.shownPages.length - 1)
+                        readonly property real fitted: win.fitWidth ? available / aspects
+                                                                    : Math.min(view.height - 2 * margin, available / aspects)
+                        readonly property real pageHeight: Math.max(48, fitted * win.zoom)
+                        LayoutMirroring.enabled: false
                         visible: backend.paged
                         x: Math.max(margin, (view.width - width) / 2)
                         y: margin
-                        width: Math.max(48, fitted * win.zoom)
-                        height: width / aspect
-                        source: backend.paged ? "image://omaread/page/" + backend.bookId + "/" + backend.section + tint : ""
-                        sourceSize: Qt.size(Math.round(width * Screen.devicePixelRatio), Math.round(height * Screen.devicePixelRatio))
-                        asynchronous: true
-                        retainWhileLoading: true
-                        fillMode: Image.PreserveAspectFit
+                        spacing: 8
+
+                        Repeater {
+                            id: sheets
+                            model: win.shownPages
+                            delegate: BookPage {
+                                id: pageSheet
+                                required property int modelData
+                                page: modelData
+                                tint: win.tint
+                                highlight: theme.accent
+                                width: Math.round(spreadRow.pageHeight * win.aspect(modelData))
+                                height: Math.round(spreadRow.pageHeight)
+                                onFollow: (target, url) => target >= 0 ? win.jump(target, 0) : Qt.openUrlExternally(url)
+                                onSelectionStarted: {
+                                    prose.deselect()
+                                    for (let i = 0; i < sheets.count; ++i)
+                                        if (sheets.itemAt(i) && sheets.itemAt(i) !== pageSheet)
+                                            sheets.itemAt(i).clearSelection()
+                                }
+                            }
+                        }
                     }
 
                     // A flowing book's chapter, in the theme's colors and the
-                    // reader's text size.
-                    Text {
+                    // reading text size. Read-only, but its words can be selected.
+                    TextEdit {
                         id: prose
                         objectName: "prose"
                         readonly property int margin: 40
                         visible: !backend.paged
                         x: (view.width - width) / 2
                         y: margin
-                        width: Math.max(200, Math.min(view.width - 2 * 32, backend.textSize * 34))
+                        width: Math.max(200, Math.min(view.width - 2 * 32, win.readingSize * 34))
                         text: backend.text
                         textFormat: backend.textFormat
                         baseUrl: backend.baseUrl
-                        wrapMode: Text.Wrap
-                        font.pixelSize: backend.textSize
-                        lineHeight: 1.35
+                        readOnly: true
+                        selectByMouse: true
+                        persistentSelection: true
+                        // Never the keyboard's: the keys turn pages.
+                        activeFocusOnPress: false
+                        wrapMode: TextEdit.Wrap
+                        font.pixelSize: win.readingSize
                         color: theme.foreground
-                        linkColor: theme.accent
+                        selectionColor: theme.accent
+                        selectedTextColor: theme.accentForeground
+                        onTextChanged: backend.spaceLines(textDocument, 1.35)
                         onLinkActivated: link => { if (!backend.followLink(link)) Qt.openUrlExternally(link) }
 
                         HoverHandler {
-                            cursorShape: prose.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            cursorShape: prose.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.IBeamCursor
                         }
                     }
                 }
 
-                // The next page, drawn ahead so turning to it is instant.
-                Image {
-                    visible: false
-                    asynchronous: true
-                    readonly property int next: backend.section + 1
-                    readonly property real aspect: backend.aspects[next] || page.aspect
-                    source: backend.paged && next < backend.sectionCount
-                        ? "image://omaread/page/" + backend.bookId + "/" + next + page.tint : ""
-                    sourceSize: Qt.size(Math.round(page.width * Screen.devicePixelRatio),
-                                        Math.round(page.width / aspect * Screen.devicePixelRatio))
+                // The pages after these, drawn ahead so turning to them is instant.
+                Repeater {
+                    model: backend.paged ? win.shownPages.map(page => page + win.shownPages.length)
+                                                       .filter(page => page < backend.sectionCount) : []
+                    delegate: Image {
+                        required property int modelData
+                        visible: false
+                        asynchronous: true
+                        source: "image://omaread/page/" + backend.bookId + "/" + modelData + win.tint
+                        sourceSize: Qt.size(Math.round(spreadRow.pageHeight * win.aspect(modelData) * Screen.devicePixelRatio),
+                                            Math.round(spreadRow.pageHeight * Screen.devicePixelRatio))
+                    }
                 }
 
                 Binding {
                     target: backend
                     property: "readingWidth"
                     value: prose.width
+                }
+
+                // Searching the book: Enter for the next match, Shift+Enter for
+                // the one before, Escape to stop.
+                Rectangle {
+                    id: findBar
+                    objectName: "findBar"
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: statusBar.top
+                    height: findRow.implicitHeight + 16
+                    visible: win.finding
+                    color: theme.colors.selection
+
+                    RowLayout {
+                        id: findRow
+                        anchors.fill: parent
+                        anchors.leftMargin: 16
+                        anchors.rightMargin: 16
+                        spacing: 16
+
+                        TextField {
+                            id: findField
+                            objectName: "findField"
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: 480
+                            placeholderText: qsTr("Find in the book")
+                            Material.roundedScale: theme.radius
+                            function submit(backwards) {
+                                if (text.trim() === "")
+                                    return
+                                if (backend.query === text.trim().replace(/\s+/g, " ") && !backend.searching)
+                                    backwards ? backend.previousHit() : backend.nextHit()
+                                else
+                                    backend.find(text)
+                            }
+                            Keys.onReturnPressed: event => submit(event.modifiers & Qt.ShiftModifier)
+                            Keys.onEnterPressed: event => submit(event.modifiers & Qt.ShiftModifier)
+                            Keys.onEscapePressed: win.stopFinding()
+                        }
+                        Label {
+                            objectName: "findStatus"
+                            Layout.fillWidth: true
+                            color: win.muted
+                            elide: Text.ElideRight
+                            text: backend.searching ? qsTr("Searching…")
+                                : backend.query === "" ? qsTr("Enter to search")
+                                : backend.hitCount === 0 ? qsTr("No matches")
+                                : qsTr("%1 of %2").arg(win.number(backend.hitIndex + 1)).arg(win.number(backend.hitCount))
+                        }
+                    }
                 }
 
                 RowLayout {
@@ -357,7 +552,7 @@ ApplicationWindow {
                     anchors.bottom: parent.bottom
                     anchors.leftMargin: 16
                     anchors.rightMargin: 16
-                    height: 32
+                    height: Math.round(win.uiSize * 2.3)
                     spacing: 16
 
                     Label {
@@ -383,9 +578,11 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.preferredWidth: 2
                         horizontalAlignment: Text.AlignRight
-                        text: (backend.paged
-                               ? qsTr("Page %1 of %2").arg(win.number(backend.section + 1)).arg(win.number(backend.sectionCount))
-                               : qsTr("Section %1 of %2").arg(win.number(backend.section + 1)).arg(win.number(backend.sectionCount)))
+                        text: (!backend.paged
+                               ? qsTr("Section %1 of %2").arg(win.number(backend.section + 1)).arg(win.number(backend.sectionCount))
+                               : win.shownPages.length > 1
+                               ? qsTr("Pages %1–%2 of %3").arg(win.number(backend.section + 1)).arg(win.number(backend.section + 2)).arg(win.number(backend.sectionCount))
+                               : qsTr("Page %1 of %2").arg(win.number(backend.section + 1)).arg(win.number(backend.sectionCount)))
                               + "  ·  " + win.percent(backend.progress)
                         color: win.muted
                         elide: Text.ElideLeft
@@ -411,7 +608,7 @@ ApplicationWindow {
             objectName: "error"
             anchors.horizontalCenter: parent.horizontalCenter
             anchors.bottom: parent.bottom
-            anchors.bottomMargin: 48
+            anchors.bottomMargin: 56
             width: Math.min(parent.width - 48, errorText.implicitWidth + 48)
             height: errorText.implicitHeight + 24
             visible: backend.error !== ""
@@ -433,6 +630,25 @@ ApplicationWindow {
             MouseArea {
                 anchors.fill: parent
                 onClicked: backend.dismissError()
+            }
+        }
+
+        // A short word that something happened, such as a copy.
+        Rectangle {
+            objectName: "toast"
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 56
+            width: toastText.implicitWidth + 32
+            height: toastText.implicitHeight + 16
+            visible: win.toast !== "" && backend.error === ""
+            radius: Math.min(6, theme.radius)
+            color: theme.colors.selection
+
+            Label {
+                id: toastText
+                anchors.centerIn: parent
+                text: win.toast
             }
         }
     }
@@ -459,8 +675,8 @@ ApplicationWindow {
         }
 
         function choose(index) {
-            if (index >= 0 && index < backend.toc.length)
-                win.jump(backend.toc[index].section, 0)
+            backend.goToEntry(index)
+            Qt.callLater(win.restore)
             close()
         }
 
@@ -475,7 +691,7 @@ ApplicationWindow {
             Label {
                 Layout.fillWidth: true
                 text: qsTr("Contents")
-                font.pixelSize: 20
+                font.pixelSize: Math.round(win.uiSize * 10 / 7)
                 font.bold: true
             }
             Label {
@@ -504,7 +720,7 @@ ApplicationWindow {
                     required property int index
                     required property var modelData
                     width: ListView.view.width
-                    height: 36
+                    height: Math.round(win.uiSize * 2.6)
                     radius: Math.min(4, theme.radius)
                     color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
 
@@ -524,6 +740,97 @@ ApplicationWindow {
                     }
                 }
             }
+        }
+    }
+
+    // Go to a page or section by its number.
+    Dialog {
+        id: goDialog
+        objectName: "goDialog"
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        title: backend.paged ? qsTr("Go to page") : qsTr("Go to section")
+        Material.roundedScale: theme.radius
+        background: Rectangle {
+            color: theme.background
+            border.color: theme.colors.selection
+            radius: theme.radius
+        }
+        onOpened: { pageField.text = ""; pageField.forceActiveFocus() }
+        onAccepted: {
+            const n = parseInt(pageField.text)
+            if (n >= 1 && n <= backend.sectionCount)
+                win.jump(n - 1, 0)
+        }
+
+        TextField {
+            id: pageField
+            objectName: "pageField"
+            implicitWidth: 280
+            LayoutMirroring.enabled: win.rightToLeft
+            placeholderText: qsTr("1 to %1").arg(win.number(backend.sectionCount))
+            inputMethodHints: Qt.ImhDigitsOnly
+            validator: IntValidator { bottom: 1; top: Math.max(1, backend.sectionCount) }
+            Material.roundedScale: theme.radius
+            onAccepted: goDialog.accept()
+        }
+
+        footer: DialogButtonBox {
+            LayoutMirroring.enabled: win.rightToLeft
+            LayoutMirroring.childrenInherit: true
+            background: null
+            Button { text: qsTr("Cancel"); flat: true; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            Button { text: qsTr("Go"); flat: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+        }
+    }
+
+    // A locked PDF asks for its password, which is never kept.
+    Dialog {
+        id: passwordDialog
+        objectName: "passwordDialog"
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        title: qsTr("Password")
+        Material.roundedScale: theme.radius
+        background: Rectangle {
+            color: theme.background
+            border.color: theme.colors.selection
+            radius: theme.radius
+        }
+        onOpened: { passwordField.text = ""; passwordField.forceActiveFocus() }
+        onAccepted: backend.unlock(passwordField.text)
+        onRejected: backend.cancelPassword()
+
+        ColumnLayout {
+            spacing: 12
+            LayoutMirroring.enabled: win.rightToLeft
+            LayoutMirroring.childrenInherit: true
+
+            Label {
+                Layout.fillWidth: true
+                Layout.preferredWidth: 340
+                text: backend.passwordWrong ? qsTr("That password didn't open %1. Try again.").arg(backend.passwordFor)
+                                            : qsTr("%1 is locked with a password.").arg(backend.passwordFor)
+                color: backend.passwordWrong ? (theme.colors.red || theme.foreground) : theme.foreground
+                wrapMode: Text.Wrap
+            }
+            TextField {
+                id: passwordField
+                objectName: "passwordField"
+                Layout.fillWidth: true
+                echoMode: TextInput.Password
+                placeholderText: qsTr("Password")
+                Material.roundedScale: theme.radius
+                onAccepted: passwordDialog.accept()
+            }
+        }
+
+        footer: DialogButtonBox {
+            LayoutMirroring.enabled: win.rightToLeft
+            LayoutMirroring.childrenInherit: true
+            background: null
+            Button { text: qsTr("Cancel"); flat: true; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            Button { text: qsTr("Open"); flat: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
         }
     }
 
@@ -555,9 +862,14 @@ ApplicationWindow {
                     { keys: "↓ ↑  J K", action: qsTr("Scroll") },
                     { keys: "]  [", action: qsTr("Next or previous section") },
                     { keys: "Home  End", action: qsTr("First or last section") },
+                    { keys: "G", action: qsTr("Go to a page or section") },
                     { keys: "T", action: qsTr("Table of contents") },
+                    { keys: "/  Ctrl+F", action: qsTr("Find in the book") },
+                    { keys: "N  Shift+N", action: qsTr("Next or previous match") },
+                    { keys: "Ctrl+C", action: qsTr("Copy the selected words") },
                     { keys: "+  −  0", action: qsTr("Larger, smaller, or reset text and pages") },
                     { keys: "W", action: qsTr("Fit pages to the width or the window") },
+                    { keys: "D", action: qsTr("One page or two side by side") },
                     { keys: "I", action: qsTr("Color pages like the theme") },
                     { keys: "F", action: qsTr("Full screen") },
                     { keys: "Esc", action: qsTr("Back to the library") },
@@ -570,7 +882,7 @@ ApplicationWindow {
                     spacing: 24
 
                     Label {
-                        Layout.preferredWidth: 170
+                        Layout.preferredWidth: win.uiSize * 12
                         text: modelData.keys
                         color: theme.accent
                         font.bold: true

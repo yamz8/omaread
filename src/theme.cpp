@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QStandardPaths>
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -45,7 +46,10 @@ double luminance(const QColor &c) {
 
 Theme::Theme(const QString &directory, QObject *parent, const QString &hyprctl, const QString &hyprlandEvents)
     : QObject(parent),
-      m_directory(directory.isEmpty() ? QDir::homePath() + "/.local/state/omarchy/current" : directory) {
+      m_directory(directory.isEmpty() ? QDir::homePath() + "/.local/state/omarchy/current" : directory),
+      // `omarchy display text size` writes the user's choice here; tests keep
+      // theirs beside the theme directory.
+      m_shellConfig(directory.isEmpty() ? QDir::homePath() + "/.config/omarchy/shell.toml" : directory + "/shell.toml") {
     m_debounce.setSingleShot(true);
     m_debounce.setInterval(80);
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, [this] { m_debounce.start(); });
@@ -198,17 +202,43 @@ void Theme::reload() {
     while (!QFileInfo::exists(ancestor) && ancestor != "/")
         ancestor = QFileInfo(ancestor).absolutePath();
     QStringList candidates{ancestor, QFileInfo(ancestor).absolutePath(), m_directory,
-                           m_directory + "/theme", m_directory + "/theme/colors.toml"};
+                           m_directory + "/theme", m_directory + "/theme/colors.toml",
+                           QFileInfo(m_shellConfig).absolutePath(), m_shellConfig};
     candidates.removeDuplicates();
     for (const auto &path : candidates)
         if (QFileInfo::exists(path))
             m_watcher.addPath(path);
 
+    // The user's choice wins, then the theme's, then the shell's default: the
+    // order the Omarchy shell resolves it in.
+    int textSize = readBaseSize(m_shellConfig);
+    if (textSize <= 0)
+        textSize = readBaseSize(m_directory + "/theme/shell.toml");
+    if (textSize <= 0)
+        textSize = 12;
+
     const Palette palette = readThemeColors(m_directory + "/theme/colors.toml");
     const bool light = palette.colors.isEmpty() ? false : palette.light;
-    if (palette.colors != m_colors || light != m_light) {
+    if (palette.colors != m_colors || light != m_light || textSize != m_textSize) {
         m_colors = palette.colors;
         m_light = light;
+        m_textSize = std::clamp(textSize, 8, 48);
         emit changed();
     }
+}
+
+int Theme::readBaseSize(const QString &path) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return 0;
+    static const QRegularExpression section("^\\s*\\[([^\\]]*)\\]");
+    static const QRegularExpression baseSize("^\\s*base-size\\s*=\\s*([0-9]+)");
+    bool inFont = false;
+    for (const QString &line : QString::fromUtf8(file.readAll()).split('\n')) {
+        if (const auto match = section.match(line); match.hasMatch())
+            inFont = match.captured(1).trimmed() == "font";
+        else if (const auto value = baseSize.match(line); inFont && value.hasMatch())
+            return value.captured(1).toInt();
+    }
+    return 0;
 }

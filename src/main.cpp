@@ -10,15 +10,42 @@
 #include <QQuickWindow>
 #include <QTimer>
 #include <QUrl>
+#include <cstdio>
 
 #include "backend.h"
+#include "cli.h"
 #include "theme.h"
 #include "translator.h"
 
 int main(int argc, char *argv[]) {
+    // Commands and help draw no window, so they must not need a display, even
+    // where the desktop exports QT_QPA_PLATFORM=wayland: QGuiApplication would
+    // abort before seeing its arguments. Bare omaread prints help, as a
+    // command line tool should; launchers say omaread open.
+    const QByteArray first = argc > 1 ? QByteArray(argv[1]) : QByteArray();
+    const bool command = argc == 1 || isCliCommand(first) || first == "--help" || first == "-h" ||
+                         first == "--version" || first == "-v";
+    if (command) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        // Qt's GTK platform theme opens a display of its own.
+        qputenv("QT_QPA_PLATFORMTHEME", "generic");
+    }
+
     QGuiApplication app(argc, argv);
     app.setApplicationName("omaread");
-    app.setApplicationVersion("0.1.0");
+    app.setApplicationVersion(OMAREAD_VERSION);
+
+    if (first == "--version" || first == "-v") {
+        printf("omaread %s\n", qPrintable(app.applicationVersion()));
+        return 0;
+    }
+    // The commands' output is read by scripts and agents, so it stays English.
+    if (command)
+        return runCli(QStringList{"omaread"} + (first == "--help" || first == "-h" ? QStringList{"help"}
+                                                                                  : app.arguments().mid(1)));
+    QStringList arguments = app.arguments().mid(1);
+    if (first == "open")
+        arguments.removeFirst();
 
     // Matches the window to omaread.desktop, so the compositor (Wayland app_id)
     // and the launcher pick up the installed icon. The compiled-in copy covers
@@ -47,8 +74,7 @@ int main(int argc, char *argv[]) {
     if (engine.rootObjects().isEmpty())
         return 1;
 
-    // `omaread book.epub` opens it, as the launcher does with a file.
-    const QStringList arguments = app.arguments().mid(1);
+    // `omaread open book.epub` opens it, as the launcher does with a file.
     if (!arguments.isEmpty())
         backend.openUrl(QUrl::fromUserInput(arguments.first(), QDir::currentPath(), QUrl::AssumeLocalFile));
 

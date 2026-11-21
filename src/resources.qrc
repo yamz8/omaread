@@ -1,7 +1,9 @@
 <RCC>
     <qresource prefix="/">
         <file alias="Main.qml">Main.qml</file>
+        <file alias="BookPage.qml">BookPage.qml</file>
         <file alias="omaread.svg">../share/omaread.svg</file>
+        <file alias="skill.md">skill.md</file>
         <file alias="i18n/en.json">i18n/en.json</file>
         <file alias="i18n/da.json">i18n/da.json</file>
     </qresource>

@@ -16,6 +16,9 @@
 #include <QBuffer>
 #include <QPainter>
 #include <QPdfWriter>
+#include <QClipboard>
+#include <QGuiApplication>
+#include <QProcess>
 #include <QSignalSpy>
 
 #include <archive.h>
@@ -255,7 +258,7 @@ QString writeEpub(const QString &folder, bool ncx = false) {
 <p><img src="../images/wide.png" alt="A wide picture"/></p>
 <p><a href="two%20b.xhtml#later">Skip ahead</a> or <a href="https://example.com/">read more</a>.</p>
 <script>alert(1)</script></body></html>)";
-    const QByteArray two = R"(<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="later">Two</h1><p>The end.</p></body></html>)";
+    const QByteArray two = R"(<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Two</h1><p>Before.</p><p id="later">The end.</p></body></html>)";
     QList<QPair<QString, QByteArray>> files = {{"mimetype", "application/epub+zip"},
                                                {"META-INF/container.xml", container},
                                                {"OEBPS/content.opf", ncx ? QByteArray(opf).replace(" properties=\"nav\"", "") : opf},
@@ -289,6 +292,39 @@ QString writePdf(const QString &folder, int pages) {
 
 QString writeText(const QString &path, const QByteArray &text) {
     return write(path, text) ? path : QString();
+}
+
+// A copy of a PDF locked with a password, made with qpdf.
+QString lockPdf(const QString &source, const QString &password) {
+    const QString locked = QFileInfo(source).absolutePath() + "/locked.pdf";
+    QProcess qpdf;
+    qpdf.start("qpdf", {"--encrypt", password, password, "256", "--", source, locked});
+    return qpdf.waitForFinished() && qpdf.exitCode() == 0 ? locked : QString();
+}
+
+// Runs the omaread binary as a script would, with no display at all.
+struct Run {
+    int code = -1;
+    QByteArray out, err;
+};
+Run omaread(const QStringList &arguments) {
+    QProcess process;
+    QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
+    // The commands must not need a display even where the desktop asks for Wayland.
+    environment.insert("QT_QPA_PLATFORM", "wayland");
+    environment.remove("WAYLAND_DISPLAY");
+    environment.remove("DISPLAY");
+    process.setProcessEnvironment(environment);
+    process.start(OMAREAD_BINARY, arguments);
+    process.waitForFinished(30000);
+    return {process.exitStatus() == QProcess::NormalExit ? process.exitCode() : -1, process.readAllStandardOutput(),
+            process.readAllStandardError()};
+}
+
+// Types text into whatever has the window's keyboard.
+void typeInto(QWindow *window, const QString &text) {
+    for (const QChar c : text)
+        QTest::keyClick(window, c.toLatin1());
 }
 
 // Counts the times the window asks for a file, in place of the portal.
@@ -337,10 +373,24 @@ private slots:
         QVERIFY(!one.contains("color"));
         QVERIFY(one.contains("font-style: italic"));
         QVERIFY(one.contains(Book::resourceUrl(7, "OEBPS/images/wide.png") + "\" width=\"2000\" height=\"500\""));
-        QVERIFY(one.contains("href=\"omaread:2\""));
         QVERIFY(one.contains("href=\"https://example.com/\""));
         QCOMPARE(book->sectionForLink("omaread:2"), 2);
         QCOMPARE(book->sectionForLink("omaread:9"), -1);
+        // Links and contents entries carry the place inside the chapter.
+        QVERIFY(one.contains("href=\"omaread:2#later\""));
+        QString fragment;
+        QCOMPARE(book->sectionForLink("omaread:2#later", &fragment), 2);
+        QCOMPARE(fragment, QString("later"));
+        QCOMPARE(book->toc[1].fragment, QString("later"));
+        QCOMPARE(book->fragmentOffset(2, "later"), int(QString("Two\nBefore.\n").size()));
+        QCOMPARE(book->fragmentOffset(2, "nowhere"), -1);
+
+        // Search counts matches per chapter, in the text the window lays out.
+        const QList<SearchHit> hits = book->search("THE END");
+        QCOMPARE(hits.size(), 1);
+        QCOMPARE(hits[0].section, 2);
+        QCOMPARE(book->search("e").size() > 3, true);
+        QVERIFY(book->plainText(1).contains(QRegularExpression("It began\\squietly")));
         QVERIFY(!book->resource("OEBPS/images/pic.png").isNull());
 
         // Images never come out wider than the text.
@@ -375,6 +425,32 @@ private slots:
         // Tinted, the paper takes the theme's background.
         const QImage tinted = book->renderPage(1, QSize(300, 600), QColor("#101010"), QColor("#eeeeee"));
         QCOMPARE(QColor(tinted.pixel(2, 2)), QColor("#101010"));
+
+        // Each page says its number, and search finds it on its own page.
+        QCOMPARE(book->plainText(2).trimmed(), QString("3"));
+        const QList<SearchHit> hits = book->search("2");
+        QCOMPARE(hits.size(), 1);
+        QCOMPARE(hits[0].section, 1);
+        QVERIFY(hits[0].rect.y() > 0 && hits[0].rect.bottom() < 0.5);
+        QCOMPARE(book->pageText(1, QRectF(0, 0, 1, 0.5)), QString("2"));
+        QVERIFY(book->pageText(1, QRectF(0, 0.6, 1, 0.4)).isEmpty());
+        QVERIFY(book->pageLinks(1).isEmpty());
+    }
+
+    void lockedPdfsNeedTheirPassword() {
+        QTemporaryDir dir;
+        const QString locked = lockPdf(writePdf(dir.path(), 2), "sesame");
+        QVERIFY2(!locked.isEmpty(), "qpdf couldn't lock the PDF");
+        Book::Error error;
+        QVERIFY(!Book::load(locked, 1, &error));
+        QCOMPARE(error, Book::Error::Locked);
+        QVERIFY(!Book::load(locked, 1, &error, "wrong"));
+        QCOMPARE(error, Book::Error::WrongPassword);
+        const auto book = Book::load(locked, 1, &error, "sesame");
+        QVERIFY(book);
+        QCOMPARE(book->sectionCount(), 2);
+        QVERIFY(!book->renderPage(0, QSize(100, 140)).isNull());
+        QCOMPARE(book->plainText(1).trimmed(), QString("2"));
     }
 
     void comicOrdersPagesByNumber() {
@@ -443,6 +519,13 @@ private slots:
         QVERIFY(!PageProvider::image(*book, "page/5/1", QSize(200, 300)).isNull());
         QVERIFY(!PageProvider::image(*book, "page/5/0/101010/eeeeee", QSize(200, 300)).isNull());
         QVERIFY(PageProvider::image(*book, "page/4/1", QSize(200, 300)).isNull());
+        // Through the engine, a stale request is answered blank, not failed.
+        auto open = std::make_shared<OpenBook>();
+        PageProvider provider(open);
+        QSize size;
+        QCOMPARE(provider.requestImage("page/5/1", &size, QSize(200, 300)).size(), QSize(1, 1));
+        open->set(book);
+        QVERIFY(provider.requestImage("page/5/1", &size, QSize(200, 300)).width() > 1);
         QVERIFY(PageProvider::image(*book, "page/5/9", QSize(200, 300)).isNull());
     }
 
@@ -479,6 +562,68 @@ private slots:
         QVERIFY(!backend.isOpen());
         backend.forget(0);
         QVERIFY(backend.library().isEmpty());
+    }
+
+    void backendAsksForAPassword() {
+        QTemporaryDir state, files;
+        FakePicker picker;
+        Backend backend(state.path(), &picker);
+        QSignalSpy asked(&backend, &Backend::passwordChanged);
+        backend.openFile(lockPdf(writePdf(files.path(), 2), "sesame"));
+        QTRY_COMPARE(backend.passwordFor(), QString("locked.pdf"));
+        QVERIFY(!backend.passwordWrong());
+        QVERIFY(backend.error().isEmpty());
+        backend.unlock("wrong");
+        QTRY_VERIFY(backend.passwordWrong());
+        QVERIFY(!backend.isOpen());
+        backend.unlock("sesame");
+        QTRY_VERIFY(backend.isOpen());
+        QVERIFY(backend.passwordFor().isEmpty());
+        QCOMPARE(backend.sectionCount(), 2);
+    }
+
+    void backendSearchesAndFollowsLinks() {
+        QTemporaryDir state, files;
+        FakePicker picker;
+        Backend backend(state.path(), &picker);
+        backend.openFile(writeEpub(files.path()));
+        QTRY_VERIFY(backend.isOpen());
+        QCOMPARE(backend.section(), 0);
+
+        backend.find("  the   END ");
+        QVERIFY(backend.searching());
+        QTRY_VERIFY(!backend.searching());
+        QCOMPARE(backend.query(), QString("the END"));
+        QCOMPARE(backend.hitCount(), 1);
+        QCOMPARE(backend.hitIndex(), 0);
+        QCOMPARE(backend.section(), 2);
+        QCOMPARE(backend.hitOccurrence(), 0);
+        backend.clearSearch();
+        QCOMPARE(backend.hitCount(), 0);
+
+        backend.goTo(1);
+        QCOMPARE(backend.target(), -1);
+        QVERIFY(backend.followLink("omaread:2#later"));
+        QCOMPARE(backend.section(), 2);
+        QCOMPARE(backend.target(), int(QString("Two\nBefore.\n").size()));
+        QVERIFY(!backend.followLink("https://example.com/"));
+        backend.goToEntry(0);
+        QCOMPARE(backend.section(), 1);
+        QCOMPARE(backend.target(), -1);
+
+        // A PDF's matches are areas on its pages, two at a time in a spread.
+        backend.openFile(writePdf(files.path(), 4));
+        QTRY_VERIFY(backend.paged());
+        backend.setSpread(true);
+        backend.find("3");
+        QTRY_COMPARE(backend.hitCount(), 1);
+        QCOMPARE(backend.section(), 2);
+        QCOMPARE(backend.pageHits().size(), 1);
+        QVERIFY(backend.pageHits().first().toMap().value("current").toBool());
+        QCOMPARE(backend.progress(), 1.0);
+        QVERIFY(backend.copyPageText(2, 0, 0, 1, 0.5));
+        QCOMPARE(QGuiApplication::clipboard()->text(), QString("3"));
+        QVERIFY(!backend.copyPageText(2, 0, 0.6, 1, 0.4));
     }
 
     void backendReportsWhatWentWrong() {
@@ -524,6 +669,20 @@ private slots:
         QCOMPARE(theme.foreground(), QColor("#202020"));
         QCOMPARE(theme.colors().value("red").value<QColor>(), QColor("#aa0000"));
         QVERIFY(theme.light());
+    }
+
+    void themeFollowsTheDesktopTextSize() {
+        QTemporaryDir dir;
+        QVERIFY(QDir(dir.path()).mkpath("theme"));
+        Theme theme(dir.path());
+        QCOMPARE(theme.textSize(), 12);
+
+        // The theme's own size, then the user's choice over it, live.
+        QVERIFY(write(dir.path() + "/theme/shell.toml", "[font]\nbase-size = 13\n"));
+        QTRY_COMPARE(theme.textSize(), 13);
+        QVERIFY(write(dir.path() + "/shell.toml", "[bar]\nbase-size = 30\n\n[font]\nfamily = \"x\"\nbase-size = 16 # px\n"));
+        QTRY_COMPARE(theme.textSize(), 16);
+        QCOMPARE(Theme::readBaseSize(dir.path() + "/missing.toml"), 0);
     }
 
     void themeAsksHyprlandAgainOnlyWhenItReloads() {
@@ -685,6 +844,55 @@ private slots:
         QVERIFY2(problems.isEmpty(), qPrintable(problems.join('\n')));
     }
 
+    void everyCatalogIsCompiledIn() {
+        const QString folder = QFileInfo(QFINDTESTDATA("../src/i18n/en.json")).absolutePath();
+        for (const QFileInfo &file : QDir(folder).entryInfoList({"*.json"}, QDir::Files))
+            QVERIFY2(QFile::exists(":/i18n/" + file.fileName()), qPrintable(file.fileName() + " is not in resources.qrc"));
+    }
+
+    void commandsReadBooksWithoutADisplay() {
+        QTemporaryDir dir;
+        const QString epub = writeEpub(dir.path());
+
+        Run run = omaread({"--version"});
+        QCOMPARE(run.code, 0);
+        QVERIFY(run.out.startsWith("omaread "));
+        run = omaread({});
+        QCOMPARE(run.code, 0);
+        QVERIFY(run.out.contains("info <file>"));
+
+        run = omaread({"info", epub, "--json"});
+        QCOMPARE(run.code, 0);
+        const QJsonObject info = QJsonDocument::fromJson(run.out).object();
+        QCOMPARE(info.value("title").toString(), QString("A Small & Quiet Book"));
+        QCOMPARE(info.value("format").toString(), QString("epub"));
+        QCOMPARE(info.value("sections").toInt(), 3);
+        QCOMPARE(info.value("contents").toArray().at(1).toObject().value("section").toInt(), 3);
+
+        run = omaread({"text", epub, "--section", "3"});
+        QCOMPARE(run.code, 0);
+        QCOMPARE(QString::fromUtf8(run.out).trimmed(), QString("Two\nBefore.\nThe end."));
+
+        run = omaread({"search", epub, "the", "end", "--json"});
+        QCOMPARE(run.code, 0);
+        QCOMPARE(QJsonDocument::fromJson(run.out).object().value("matches").toInt(), 1);
+
+        // Errors go to stderr with a failing exit code.
+        run = omaread({"text", epub, "--section", "9"});
+        QCOMPARE(run.code, 1);
+        QVERIFY(run.err.contains("from 1 to 3"));
+        run = omaread({"info", dir.filePath("gone.pdf")});
+        QCOMPARE(run.code, 1);
+        QVERIFY(run.err.contains("Can't find"));
+        const QString locked = lockPdf(writePdf(dir.path(), 1), "sesame");
+        QCOMPARE(omaread({"info", locked}).code, 1);
+        QCOMPARE(omaread({"text", locked, "--password", "sesame"}).out.trimmed(), QByteArray("1"));
+
+        run = omaread({"skill"});
+        QCOMPARE(run.code, 0);
+        QVERIFY(run.out.startsWith("---\nname: omaread"));
+    }
+
     void windowReadsFromTheKeyboard() {
         // A temp language, theme and library, so the test never depends on the desktop's.
         QTemporaryDir dir, files;
@@ -711,6 +919,8 @@ private slots:
         QVERIFY(QTest::qWaitForWindowExposed(window));
         window->requestActivate();
         QVERIFY(QTest::qWaitForWindowActive(window));
+        // The contents appear, and take keys, once the window's size is in.
+        QTRY_VERIFY(window->property("settled").toBool());
 
         // An empty library says how to start, and O asks for a file.
         QVERIFY(item(window->contentItem(), "empty")->isVisible());
@@ -750,28 +960,79 @@ private slots:
         QTRY_VERIFY(!contents->property("visible").toBool());
         QCOMPARE(backend.section(), 2);
 
-        const int size = backend.textSize();
+        // The text size grows from the desktop's, and 0 puts it back.
+        auto *prose = item(window->contentItem(), "prose");
+        QCOMPARE(prose->property("font").value<QFont>().pixelSize(), 18);
         QTest::keyClick(window, Qt::Key_Plus);
-        QCOMPARE(backend.textSize(), size + 2);
+        QCOMPARE(backend.textScale(), 1.6);
+        QTRY_COMPARE(prose->property("font").value<QFont>().pixelSize(), 19);
         QTest::keyClick(window, Qt::Key_0);
-        QCOMPARE(backend.textSize(), 20);
+        QCOMPARE(backend.textScale(), Backend::defaultTextScale);
+
+        // G goes to a section by its number.
+        auto *goDialog = window->findChild<QObject *>("goDialog");
+        QTest::keyClick(window, Qt::Key_G);
+        QTRY_VERIFY(goDialog->property("opened").toBool());
+        typeInto(window, "2");
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(!goDialog->property("visible").toBool());
+        QCOMPARE(backend.section(), 1);
+
+        // / searches; the match is selected, and Ctrl+C copies it.
+        QTest::keyClick(window, Qt::Key_Slash);
+        auto *findField = item(window->contentItem(), "findField");
+        QTRY_VERIFY(findField->hasActiveFocus());
+        typeInto(window, "shorter");
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(backend.hitCount(), 1);
+        QCOMPARE(backend.section(), 2);
+        QTRY_COMPARE(prose->property("selectedText").toString(), QString("Shorter"));
+        QTest::keyClick(window, Qt::Key_Escape);
+        QVERIFY(!findField->hasActiveFocus());
+        QCOMPARE(backend.hitCount(), 0);
+        prose->setProperty("cursorPosition", 0);
+        QMetaObject::invokeMethod(prose, "select", Q_ARG(int, 0), Q_ARG(int, 5));
+        QTest::keySequence(window, QKeySequence::Copy);
+        QCOMPARE(QGuiApplication::clipboard()->text(), QString("Third"));
 
         // A PDF turns its pages with the arrows.
         backend.openFile(writePdf(files.path(), 3));
         QTRY_VERIFY(backend.paged());
-        QTRY_COMPARE(item(window->contentItem(), "page")->property("status").toInt(), 1);
+        QTRY_COMPARE(item(window->contentItem(), "pageImage")->property("status").toInt(), 1);
         QTest::keyClick(window, Qt::Key_Right);
         QCOMPARE(backend.section(), 1);
         QCOMPARE(where->property("text").toString(), QString("Page 2 of 3  ·  67%"));
         QTest::keyClick(window, Qt::Key_I);
         QVERIFY(backend.tintPages());
         QTest::keyClick(window, Qt::Key_I);
+        // D shows two pages side by side, and turns two at a time.
+        QTest::keyClick(window, Qt::Key_D);
+        QVERIFY(backend.spread());
+        QTRY_COMPARE(item(window->contentItem(), "spread")->childItems().size(), 3);
+        QCOMPARE(where->property("text").toString(), QString("Pages 2–3 of 3  ·  100%"));
+        QTest::keyClick(window, Qt::Key_Left);
+        QCOMPARE(backend.section(), 0);
+        QTest::keyClick(window, Qt::Key_D);
+        QVERIFY(!backend.spread());
+        QTest::keyClick(window, Qt::Key_Right);
+        QCOMPARE(backend.section(), 1);
+
+        // A locked PDF asks for its password in the window.
+        auto *passwordDialog = window->findChild<QObject *>("passwordDialog");
+        backend.openFile(lockPdf(writePdf(files.path(), 2), "sesame"));
+        QTRY_VERIFY(passwordDialog->property("opened").toBool());
+        typeInto(window, "sesame");
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_COMPARE(backend.sectionCount(), 2);
+        QCOMPARE(backend.title(), QString("Paper"));
+        QTRY_VERIFY(!passwordDialog->property("visible").toBool());
 
         // Escape goes back to the library, where both books wait.
         QTest::keyClick(window, Qt::Key_Escape);
         QVERIFY(!backend.isOpen());
         auto *shelf = item(window->contentItem(), "shelf");
-        QTRY_COMPARE(shelf->property("count").toInt(), 2);
+        QTRY_COMPARE(shelf->property("count").toInt(), 3);
+        QTest::keyClick(window, Qt::Key_Down);
         QTest::keyClick(window, Qt::Key_Down);
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_VERIFY(backend.isOpen());

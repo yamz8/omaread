@@ -7,13 +7,14 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QImageReader>
-#include <QPdfBookmarkModel>
-#include <QPdfDocument>
 #include <QRegularExpression>
 #include <QStringDecoder>
+#include <QTextDocument>
 #include <QThread>
 #include <QUrl>
 #include <QXmlStreamReader>
+
+#include <poppler-qt6.h>
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -196,7 +197,7 @@ QString decodeText(const QByteArray &bytes) {
 
 Book::~Book() = default;
 
-std::shared_ptr<Book> Book::load(const QString &path, int id, Error *error) {
+std::shared_ptr<Book> Book::load(const QString &path, int id, Error *error, const QString &password) {
     *error = Error::None;
     const QFileInfo info(path);
     if (!info.exists() || !info.isFile()) {
@@ -235,7 +236,7 @@ std::shared_ptr<Book> Book::load(const QString &path, int id, Error *error) {
 
     bool loaded = false;
     switch (book->kind) {
-    case Kind::Pdf: loaded = book->loadPdf(error); break;
+    case Kind::Pdf: loaded = book->loadPdf(error, password); break;
     case Kind::Epub: loaded = book->loadEpub(error); break;
     case Kind::Comic: loaded = book->loadComic(error); break;
     case Kind::Markdown: loaded = book->loadMarkdown(error); break;
@@ -250,43 +251,55 @@ std::shared_ptr<Book> Book::load(const QString &path, int id, Error *error) {
     return book;
 }
 
-bool Book::loadPdf(Error *error) {
-    m_pdf = std::make_unique<QPdfDocument>();
-    switch (m_pdf->load(path)) {
-    case QPdfDocument::Error::None: break;
-    case QPdfDocument::Error::FileNotFound: *error = Error::Missing; return false;
-    case QPdfDocument::Error::IncorrectPassword:
-    case QPdfDocument::Error::UnsupportedSecurityScheme: *error = Error::Locked; return false;
-    default: *error = Error::Unreadable; return false;
+namespace {
+
+// A fresh document for every use, as Signed does: poppler 26.08 hangs or
+// aborts when one document draws a page again after drawing another, and
+// loading only parses the cross-reference table, a millisecond or two.
+std::unique_ptr<Poppler::Document> openPdf(const QString &path, const QByteArray &password) {
+    std::unique_ptr<Poppler::Document> document = Poppler::Document::load(path, password, password);
+    if (!document || document->isLocked())
+        return nullptr;
+    document->setRenderHint(Poppler::Document::Antialiasing);
+    document->setRenderHint(Poppler::Document::TextAntialiasing);
+    document->setRenderHint(Poppler::Document::TextHinting);
+    return document;
+}
+
+} // namespace
+
+bool Book::loadPdf(Error *error, const QString &password) {
+    m_password = password.toUtf8();
+    std::unique_ptr<Poppler::Document> document = Poppler::Document::load(path, m_password, m_password);
+    if (!document) {
+        *error = Error::Unreadable;
+        return false;
     }
-    const QString metaTitle = m_pdf->metaData(QPdfDocument::MetaDataField::Title).toString().trimmed();
+    if (document->isLocked()) {
+        *error = password.isEmpty() ? Error::Locked : Error::WrongPassword;
+        return false;
+    }
+    const QString metaTitle = document->info("Title").simplified();
     if (!metaTitle.isEmpty())
         title = metaTitle;
-    author = m_pdf->metaData(QPdfDocument::MetaDataField::Author).toString().trimmed();
-    for (int page = 0; page < m_pdf->pageCount(); ++page) {
-        const QSizeF size = m_pdf->pagePointSize(page);
+    author = document->info("Author").simplified();
+    for (int index = 0; index < document->numPages(); ++index) {
+        const std::unique_ptr<Poppler::Page> page = document->page(index);
+        const QSizeF size = page ? page->pageSizeF() : QSizeF();
         aspects << (size.height() > 0 ? size.width() / size.height() : 1.0 / 1.4142);
     }
 
-    QPdfBookmarkModel bookmarks;
-    bookmarks.setDocument(m_pdf.get());
-    std::function<void(const QModelIndex &)> walk = [&](const QModelIndex &parent) {
-        for (int row = 0; row < bookmarks.rowCount(parent); ++row) {
-            const QModelIndex index = bookmarks.index(row, 0, parent);
-            toc << TocEntry{index.data(int(QPdfBookmarkModel::Role::Title)).toString().simplified(),
-                            std::clamp(index.data(int(QPdfBookmarkModel::Role::Page)).toInt(), 0,
-                                       int(aspects.size()) - 1),
-                            index.data(int(QPdfBookmarkModel::Role::Level)).toInt()};
-            walk(index);
+    std::function<void(const QVector<Poppler::OutlineItem> &, int)> walk = [&](const QVector<Poppler::OutlineItem> &items,
+                                                                              int depth) {
+        for (const Poppler::OutlineItem &item : items) {
+            const auto destination = item.destination();
+            const int page = destination ? destination->pageNumber() - 1 : -1;
+            if (page >= 0 && page < aspects.size() && !item.name().trimmed().isEmpty())
+                toc << TocEntry{item.name().simplified(), page, depth, {}};
+            walk(item.children(), depth + 1);
         }
     };
-    walk({});
-    bookmarks.setDocument(nullptr);
-
-    // Loaded on a worker thread, drawn from the provider's; it belongs to the
-    // application's thread like every object the backend keeps.
-    if (QCoreApplication::instance())
-        m_pdf->moveToThread(QCoreApplication::instance()->thread());
+    walk(document->outline(), 0);
     return true;
 }
 
@@ -338,7 +351,6 @@ bool Book::loadEpub(Error *error) {
                 spine << item.path;
         }
     }
-    m_chapterPaths = spine;
 
     // The images chapters show stay in the book, drawn by the provider on demand.
     QHash<QString, QSize> imageSizes;
@@ -417,7 +429,11 @@ bool Book::loadEpub(Error *error) {
             if (!QUrl(href).scheme().isEmpty())
                 return "<a href=\"" + escapeAttribute(href) + "\">";
             const int target = int(spine.indexOf(resolve(chapter, href)));
-            return target < 0 ? QString("<a>") : QString("<a href=\"omaread:%1\">").arg(target);
+            const QString fragment = QUrl(href).fragment(QUrl::FullyDecoded);
+            return target < 0 ? QString("<a>")
+                              : QString("<a href=\"omaread:%1%2\">")
+                                    .arg(target)
+                                    .arg(fragment.isEmpty() ? QString() : "#" + escapeAttribute(fragment));
         });
         html = replaceAll(html, stylePattern, [&](const QRegularExpressionMatch &match) {
             const QString style = keptStyle(decodeHtml(match.captured(1).mid(1, match.captured(1).size() - 2)));
@@ -438,7 +454,7 @@ bool Book::loadEpub(Error *error) {
     auto addEntry = [&](const QString &from, const QString &entryTitle, const QString &href, int depth) {
         const int section = int(spine.indexOf(resolve(from, href)));
         if (section >= 0 && !entryTitle.isEmpty())
-            toc << TocEntry{entryTitle, section, std::max(0, depth)};
+            toc << TocEntry{entryTitle, section, std::max(0, depth), QUrl(href).fragment(QUrl::FullyDecoded)};
     };
     if (!navPath.isEmpty()) {
         QXmlStreamReader nav(xmlEntities(files.value(navPath)));
@@ -533,7 +549,7 @@ bool Book::loadMarkdown(Error *error) {
                 aspects << 0;
             }
             current.clear();
-            toc << TocEntry{match.captured(2).trimmed(), int(sections.size()), int(match.captured(1).size()) - 1};
+            toc << TocEntry{match.captured(2).trimmed(), int(sections.size()), int(match.captured(1).size()) - 1, {}};
             if (!titled && match.captured(1) == "#") {
                 title = match.captured(2).trimmed();
                 titled = true;
@@ -574,12 +590,146 @@ bool Book::loadText(Error *error) {
     return true;
 }
 
-int Book::sectionForLink(const QString &link) const {
+QString Book::kindName() const {
+    switch (kind) {
+    case Kind::Pdf: return "pdf";
+    case Kind::Epub: return "epub";
+    case Kind::Comic: return "comic";
+    case Kind::Markdown: return "markdown";
+    case Kind::Text: return "text";
+    }
+    return "text";
+}
+
+int Book::sectionForLink(const QString &link, QString *fragment) const {
     if (!link.startsWith("omaread:"))
         return -1;
+    const QString target = link.mid(8);
     bool ok = false;
-    const int section = link.mid(8).toInt(&ok);
+    const int section = target.section('#', 0, 0).toInt(&ok);
+    if (fragment)
+        *fragment = target.contains('#') ? decodeHtml(target.section('#', 1)) : QString();
     return ok && section >= 0 && section < sectionCount() ? section : -1;
+}
+
+int Book::fragmentOffset(int section, const QString &fragment) const {
+    if (fragment.isEmpty() || paged() || section < 0 || section >= sections.size() || kind != Kind::Epub)
+        return -1;
+    const QString &html = sections[section];
+    const QRegularExpression target("<(\\w+)[^>]*\\b(id|name)\\s*=\\s*([\"'])" + QRegularExpression::escape(fragment) + "\\3",
+                                    QRegularExpression::CaseInsensitiveOption);
+    const auto match = target.match(html);
+    if (!match.hasMatch())
+        return -1;
+    // The text before the element is what the window lays out before it, and
+    // an element that starts a block of its own comes after one more break.
+    static const QStringList blocks = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "li",
+                                       "blockquote", "pre", "table", "tr", "ul", "ol", "header", "aside", "figure"};
+    QTextDocument document;
+    document.setHtml(html.left(match.capturedStart()));
+    const int before = int(document.toPlainText().size());
+    return before + (before > 0 && blocks.contains(match.captured(1).toLower()) ? 1 : 0);
+}
+
+QString Book::plainText(int section) const {
+    if (section < 0 || section >= sectionCount())
+        return {};
+    switch (kind) {
+    case Kind::Pdf: {
+        QMutexLocker lock(&m_pdfMutex);
+        const auto document = openPdf(path, m_password);
+        const auto page = document ? document->page(section) : nullptr;
+        return page ? page->text(QRectF()) : QString();
+    }
+    case Kind::Comic: return {};
+    case Kind::Epub: {
+        QTextDocument document;
+        document.setHtml(sections[section]);
+        return document.toPlainText();
+    }
+    case Kind::Markdown: {
+        QTextDocument document;
+        document.setMarkdown(sections[section]);
+        return document.toPlainText();
+    }
+    case Kind::Text: return sections[section];
+    }
+    return {};
+}
+
+QString Book::pageText(int index, const QRectF &area) const {
+    if (kind != Kind::Pdf || index < 0 || index >= aspects.size())
+        return {};
+    QMutexLocker lock(&m_pdfMutex);
+    const auto document = openPdf(path, m_password);
+    const auto page = document ? document->page(index) : nullptr;
+    if (!page)
+        return {};
+    const QSizeF size = page->pageSizeF();
+    return page->text(QRectF(area.x() * size.width(), area.y() * size.height(), area.width() * size.width(),
+                             area.height() * size.height()))
+        .trimmed();
+}
+
+QList<PageLink> Book::pageLinks(int index) const {
+    QList<PageLink> links;
+    if (kind != Kind::Pdf || index < 0 || index >= aspects.size())
+        return links;
+    QMutexLocker lock(&m_pdfMutex);
+    const auto document = openPdf(path, m_password);
+    const auto page = document ? document->page(index) : nullptr;
+    if (!page)
+        return links;
+    for (const auto &link : page->links()) {
+        PageLink found{link->linkArea().normalized(), -1, {}};
+        if (link->linkType() == Poppler::Link::Goto) {
+            const auto *go = static_cast<const Poppler::LinkGoto *>(link.get());
+            if (!go->isExternal())
+                found.page = go->destination().pageNumber() - 1;
+        } else if (link->linkType() == Poppler::Link::Browse) {
+            found.url = static_cast<const Poppler::LinkBrowse *>(link.get())->url();
+        }
+        if ((found.page >= 0 && found.page < aspects.size()) || !found.url.isEmpty())
+            links << found;
+    }
+    return links;
+}
+
+QList<SearchHit> Book::search(const QString &words, const std::atomic_bool *cancel) const {
+    QList<SearchHit> hits;
+    const QString needle = words.simplified();
+    if (needle.isEmpty())
+        return hits;
+    if (kind == Kind::Pdf) {
+        QMutexLocker lock(&m_pdfMutex);
+        const auto document = openPdf(path, m_password);
+        for (int index = 0; document && index < document->numPages(); ++index) {
+            if (cancel && *cancel)
+                break;
+            const auto page = document->page(index);
+            if (!page)
+                continue;
+            const QSizeF size = page->pageSizeF();
+            int occurrence = 0;
+            for (const QRectF &rect : page->search(needle, Poppler::Page::IgnoreCase | Poppler::Page::IgnoreDiacritics))
+                hits << SearchHit{index, occurrence++,
+                                  QRectF(rect.x() / size.width(), rect.y() / size.height(), rect.width() / size.width(),
+                                         rect.height() / size.height())};
+        }
+        return hits;
+    }
+    for (int section = 0; section < sections.size(); ++section) {
+        if (cancel && *cancel)
+            break;
+        // The window lays text out with paragraph separators where this has
+        // line breaks; both are one character, so the counts line up.
+        const QString text = plainText(section);
+        int occurrence = 0;
+        for (qsizetype at = text.indexOf(needle, 0, Qt::CaseInsensitive); at >= 0;
+             at = text.indexOf(needle, at + needle.size(), Qt::CaseInsensitive))
+            hits << SearchHit{section, occurrence++, {}};
+    }
+    return hits;
 }
 
 QImage Book::renderPage(int page, const QSize &requested, const QColor &background, const QColor &foreground) const {
@@ -595,8 +745,13 @@ QImage Book::renderPage(int page, const QSize &requested, const QColor &backgrou
 
     QImage image;
     if (kind == Kind::Pdf) {
-        QMutexLocker lock(&m_mutex);
-        image = m_pdf->render(page, size, {}, QImage::Format_ARGB32, Qt::white).convertToFormat(QImage::Format_RGB32);
+        QMutexLocker lock(&m_pdfMutex);
+        const auto document = openPdf(path, m_password);
+        const auto pdfPage = document ? document->page(page) : nullptr;
+        if (pdfPage) {
+            const double dpi = 72.0 * size.width() / pdfPage->pageSizeF().width();
+            image = pdfPage->renderToImage(dpi, dpi).convertToFormat(QImage::Format_RGB32);
+        }
     } else if (page < m_pages.size()) {
         image = QImage::fromData(m_pages[page]);
         if (!image.isNull())

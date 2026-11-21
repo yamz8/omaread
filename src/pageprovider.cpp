@@ -4,6 +4,12 @@ QImage PageProvider::requestImage(const QString &id, QSize *size, const QSize &r
     QImage result;
     if (const auto book = m_open->get())
         result = image(*book, id, requestedSize);
+    // A request for a book that has since been closed or replaced is
+    // answered, blank, rather than failed: its image is about to be replaced.
+    if (result.isNull()) {
+        result = QImage(1, 1, QImage::Format_ARGB32);
+        result.fill(Qt::transparent);
+    }
     if (size)
         *size = result.size();
     return result;
