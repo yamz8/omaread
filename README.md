@@ -12,7 +12,7 @@ Open a book from the library, with `O`, by dropping it on the window, or from th
 omaread open book.epub
 ```
 
-Search the whole book with `/`, select words with the mouse and copy them with `Ctrl+C`, follow links inside the book, and read PDFs and comics two pages at a time with `D`. A PDF locked with a password asks for it, and never keeps it. The text size follows the desktop's, set in `~/.config/omarchy/shell.toml`.
+Search the whole book with `/`, select words with the mouse and copy them with `Ctrl+C`, follow links inside the book, and read PDFs and comics two pages at a time with `D`. Pages turn with a slide, a paper-like flip, a cover, a fade, or no animation at all; `A` picks the next one and the choice is remembered. A PDF locked with a password asks for it, and never keeps it. The text size follows the desktop's, set in `~/.config/omarchy/shell.toml`.
 
 ## Commands
 
@@ -44,6 +44,7 @@ omaread skill install               # teach coding agents to use these commands
 | `W` | Fit pages to the width or the window |
 | `D` | One page or two side by side |
 | `I` | Color pages like the theme |
+| `A` | Change how pages turn |
 | `F` | Full screen |
 | `Esc` | Back to the library |
 | `Enter` `Delete` | Open or forget a book in the library |

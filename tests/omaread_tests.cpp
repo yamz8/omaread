@@ -564,6 +564,21 @@ private slots:
         QVERIFY(backend.library().isEmpty());
     }
 
+    void backendRemembersHowPagesTurn() {
+        QTemporaryDir state;
+        FakePicker picker;
+        {
+            Backend backend(state.path(), &picker);
+            QCOMPARE(backend.transition(), QString("slide"));
+            backend.setTransition("sideways");
+            QCOMPARE(backend.transition(), QString("slide"));
+            backend.setTransition("cover");
+            backend.save();
+        }
+        Backend again(state.path(), &picker);
+        QCOMPARE(again.transition(), QString("cover"));
+    }
+
     void backendAsksForAPassword() {
         QTemporaryDir state, files;
         FakePicker picker;
@@ -921,6 +936,8 @@ private slots:
         QVERIFY(QTest::qWaitForWindowActive(window));
         // The contents appear, and take keys, once the window's size is in.
         QTRY_VERIFY(window->property("settled").toBool());
+        // Pages turn at once here; the turns themselves are tested below.
+        backend.setTransition("none");
 
         // An empty library says how to start, and O asks for a file.
         QVERIFY(item(window->contentItem(), "empty")->isVisible());
@@ -968,6 +985,31 @@ private slots:
         QTRY_COMPARE(prose->property("font").value<QFont>().pixelSize(), 19);
         QTest::keyClick(window, Qt::Key_0);
         QCOMPARE(backend.textScale(), Backend::defaultTextScale);
+
+        // A turned page animates, and lands where it should. A key pressed
+        // during a turn ends it and turns again.
+        backend.setTransition("slide");
+        backend.goTo(0);
+        QTest::keyClick(window, Qt::Key_BracketRight);
+        QVERIFY(window->property("turning").toBool());
+        QTRY_COMPARE(backend.section(), 1);
+        QTRY_COMPARE(window->property("turnKind").toString(), QString("slide"));
+        QTest::keyClick(window, Qt::Key_BracketRight);
+        QTRY_COMPARE(backend.section(), 2);
+        QTRY_VERIFY(!window->property("turning").toBool());
+        // A picks the next kind of turn, and says which.
+        QTest::keyClick(window, Qt::Key_A);
+        QCOMPARE(backend.transition(), QString("flip"));
+        QCOMPARE(window->property("toast").toString(), QString("Page turn: Flip"));
+        QTest::keyClick(window, Qt::Key_BracketLeft);
+        QTRY_COMPARE(backend.section(), 1);
+        QTRY_VERIFY(!window->property("turning").toBool());
+        for (int i = 0; i < 3; ++i)
+            QTest::keyClick(window, Qt::Key_A);
+        QCOMPARE(backend.transition(), QString("none"));
+        QTest::keyClick(window, Qt::Key_BracketLeft);
+        QCOMPARE(backend.section(), 0);
+        QVERIFY(!window->property("turning").toBool());
 
         // G goes to a section by its number.
         auto *goDialog = window->findChild<QObject *>("goDialog");

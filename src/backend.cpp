@@ -65,6 +65,8 @@ void Backend::readState() {
     m_textScale = std::clamp(state.value("textScale").toDouble(defaultTextScale), 0.8, 4.0);
     m_tintPages = state.value("tintPages").toBool();
     m_spread = state.value("spread").toBool();
+    if (const QString transition = state.value("transition").toString(); transitions().contains(transition))
+        m_transition = transition;
     for (const QJsonValue &value : state.value("books").toArray()) {
         const QJsonObject book = value.toObject();
         Entry entry{book.value("path").toString(), book.value("title").toString(), book.value("author").toString(),
@@ -84,7 +86,7 @@ void Backend::save() {
                                  {"section", entry.section},   {"sections", entry.sections},
                                  {"position", entry.position}, {"opened", double(entry.opened)}});
     const QJsonObject state{
-        {"textScale", m_textScale}, {"tintPages", m_tintPages}, {"spread", m_spread}, {"books", books}};
+        {"textScale", m_textScale}, {"tintPages", m_tintPages}, {"spread", m_spread}, {"transition", m_transition}, {"books", books}};
     QDir().mkpath(QFileInfo(m_stateFile).path());
     // Atomic, so a crash mid-write never loses the whole library.
     QSaveFile file(m_stateFile);
@@ -248,6 +250,14 @@ void Backend::setTintPages(bool tint) {
     if (tint == m_tintPages)
         return;
     m_tintPages = tint;
+    emit settingsChanged();
+    scheduleSave();
+}
+
+void Backend::setTransition(const QString &transition) {
+    if (transition == m_transition || !transitions().contains(transition))
+        return;
+    m_transition = transition;
     emit settingsChanged();
     scheduleSave();
 }

@@ -69,6 +69,9 @@ class Backend : public QObject {
     Q_PROPERTY(bool tintPages READ tintPages WRITE setTintPages NOTIFY settingsChanged)
     // Two pages side by side, as a printed book or comic opens.
     Q_PROPERTY(bool spread READ spread WRITE setSpread NOTIFY settingsChanged)
+    // How a page turns: one of transitions, "slide" by default.
+    Q_PROPERTY(QString transition READ transition WRITE setTransition NOTIFY settingsChanged)
+    Q_PROPERTY(QStringList transitions READ transitions CONSTANT)
 
 public:
     static constexpr double defaultTextScale = 1.5;
@@ -124,6 +127,9 @@ public:
     void setTintPages(bool tint);
     bool spread() const { return m_spread; }
     void setSpread(bool spread);
+    QString transition() const { return m_transition; }
+    void setTransition(const QString &transition);
+    static QStringList transitions() { return {"slide", "flip", "cover", "fade", "none"}; }
 
     Q_INVOKABLE void openUrl(const QUrl &url);
     Q_INVOKABLE void openFile(const QString &path, const QString &password = {});
@@ -226,5 +232,6 @@ private:
     double m_textScale = defaultTextScale;
     bool m_tintPages = false;
     bool m_spread = false;
+    QString m_transition = "slide";
     QTimer m_saveTimer;
 };

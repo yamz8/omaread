@@ -39,7 +39,15 @@ ApplicationWindow {
     // coming, so they first appear where they'll stay.
     property bool settled: false
     property bool drawn: false
-    onFrameSwapped: if (!drawn) { drawn = true; settleTimer.start() }
+    onFrameSwapped: {
+        if (!drawn) { drawn = true; settleTimer.start() }
+        // A turn waits two frames, so the picture of the page it leaves is
+        // taken before the page changes.
+        if (pendingTurn && ++pendingTurn.frames >= 2)
+            startTurn()
+        else if (pendingTurn)
+            requestUpdate()
+    }
     onWidthChanged: if (drawn) settled = true
     onHeightChanged: if (drawn) settled = true
     Timer { id: settleTimer; interval: 150; onTriggered: win.settled = true }
@@ -72,7 +80,7 @@ ApplicationWindow {
             if (backend.section + step < backend.sectionCount)
                 jump(backend.section + step, 0)
         } else {
-            view.contentY = Math.min(view.contentY + screenStep(), view.contentHeight - view.height)
+            turn(1, () => view.contentY = Math.min(view.contentY + screenStep(), view.contentHeight - view.height))
         }
     }
     function backward() {
@@ -80,7 +88,7 @@ ApplicationWindow {
             if (backend.section > 0)
                 jump(Math.max(0, backend.section - step), 1)
         } else {
-            view.contentY = Math.max(0, view.contentY - screenStep())
+            turn(-1, () => view.contentY = Math.max(0, view.contentY - screenStep()))
         }
     }
     function screenStep() { return Math.max(40, view.height - 3 * readingSize) }
@@ -88,8 +96,85 @@ ApplicationWindow {
         view.contentY = Math.max(0, Math.min(view.contentY + dy, view.contentHeight - view.height))
     }
     function jump(section, position) {
-        backend.goTo(section, position)
-        Qt.callLater(restore)
+        if (section === backend.section) {
+            backend.goTo(section, position)
+            Qt.callLater(restore)
+            return
+        }
+        turn(section > backend.section ? 1 : -1, () => {
+            backend.goTo(section, position)
+            Qt.callLater(restore)
+        })
+    }
+
+    // Page turns: a picture of the page being left is taken, the page
+    // changes underneath it, and the two move as the chosen transition says.
+    // turnKind is set only while a turn plays; turnProgress runs from 0 to 1.
+    property string turnKind: ""
+    property int turnDirection: 1
+    property real turnProgress: 0
+    property var pendingTurn: null
+    readonly property bool turning: turnKind !== "" || pendingTurn !== null
+
+    function transitionName(kind) {
+        return kind === "slide" ? qsTr("Slide") : kind === "flip" ? qsTr("Flip") : kind === "cover" ? qsTr("Cover")
+             : kind === "fade" ? qsTr("Fade") : qsTr("Off")
+    }
+    function nextTransition() {
+        const kinds = backend.transitions
+        backend.transition = kinds[(kinds.indexOf(backend.transition) + 1) % kinds.length]
+        say(qsTr("Page turn: %1").arg(transitionName(backend.transition)))
+    }
+    function turn(direction, action) {
+        // A turn asked for while one plays ends that one at once.
+        if (turnAnimation.running)
+            turnAnimation.complete()
+        endTurn()
+        if (pendingTurn) {
+            const waiting = pendingTurn
+            pendingTurn = null
+            waiting.action()
+            action()
+            return
+        }
+        if (backend.transition === "none" || !settled) {
+            action()
+            return
+        }
+        pendingTurn = { direction: direction, action: action, frames: 0 }
+        snapshot.scheduleUpdate()
+        turnTimeout.restart()
+    }
+    function startTurn() {
+        const waiting = pendingTurn
+        pendingTurn = null
+        turnTimeout.stop()
+        turnDirection = waiting.direction
+        turnProgress = 0
+        turnKind = backend.transition
+        waiting.action()
+        turnAnimation.restart()
+    }
+    function endTurn() {
+        turnKind = ""
+        turnProgress = 0
+    }
+
+    NumberAnimation {
+        id: turnAnimation
+        target: win
+        property: "turnProgress"
+        from: 0
+        to: 1
+        duration: win.turnKind === "flip" ? 420 : win.turnKind === "fade" ? 240 : win.turnKind === "cover" ? 300 : 260
+        easing.type: win.turnKind === "flip" ? Easing.InOutSine : win.turnKind === "fade" ? Easing.InOutQuad : Easing.OutCubic
+        onFinished: win.endTurn()
+    }
+    // If no frame comes, as when the window is hidden, the page still turns.
+    Timer {
+        id: turnTimeout
+        interval: 150
+        onTriggered: if (win.pendingTurn) { const waiting = win.pendingTurn; win.pendingTurn = null; waiting.action() }
     }
     function restore() {
         restoring = true
@@ -223,6 +308,7 @@ ApplicationWindow {
     Shortcut { sequence: "W"; enabled: win.reading && backend.paged; onActivated: { win.fitWidth = !win.fitWidth; win.zoom = 1; Qt.callLater(win.restore) } }
     Shortcut { sequence: "D"; enabled: win.reading && backend.paged; onActivated: backend.spread = !backend.spread }
     Shortcut { sequence: "I"; enabled: win.reading && backend.paged; onActivated: backend.tintPages = !backend.tintPages }
+    Shortcut { sequence: "A"; enabled: win.reading; onActivated: win.nextTransition() }
 
     Shortcut { sequence: "Down"; enabled: win.browsing; onActivated: shelf.incrementCurrentIndex() }
     Shortcut { sequence: "Up"; enabled: win.browsing; onActivated: shelf.decrementCurrentIndex() }
@@ -387,94 +473,175 @@ ApplicationWindow {
             Item {
                 objectName: "reader"
 
-                Flickable {
-                    id: view
-                    objectName: "view"
+                // The page in view, on the window's color, so a turn can move
+                // it as a whole.
+                // Turning pages stay inside the reading area.
+                Item {
+                    id: turnArea
                     anchors.fill: parent
                     anchors.bottomMargin: statusBar.height + (findBar.visible ? findBar.height : 0)
-                    clip: true
-                    // The mouse selects words; the wheel, the touchpad and the
-                    // keys move through the book.
-                    acceptedButtons: Qt.NoButton
-                    boundsBehavior: Flickable.StopAtBounds
-                    contentWidth: backend.paged ? Math.max(width, spreadRow.width + 2 * spreadRow.margin) : width
-                    contentHeight: backend.paged ? spreadRow.height + 2 * spreadRow.margin : prose.height + 2 * prose.margin
-                    ScrollBar.vertical: ScrollBar {}
-                    ScrollBar.horizontal: ScrollBar {}
+                    clip: win.turnKind !== ""
 
-                    onContentYChanged: if (!win.restoring && contentHeight > height)
-                        backend.position = contentY / (contentHeight - height)
-                    onContentHeightChanged: Qt.callLater(win.restore)
-                    onHeightChanged: Qt.callLater(win.restore)
+                    Item {
+                        id: stage
+                        objectName: "stage"
+                        readonly property bool front: (win.turnKind === "cover" && win.turnDirection > 0)
+                                                      || (win.turnKind === "flip" && win.turnDirection < 0)
+                        anchors.fill: parent
+                        z: front ? 1 : 0
+                        // A fade goes out to the window's color and back in.
+                        opacity: win.turnKind === "fade" ? Math.max(0, 2 * win.turnProgress - 1) : 1
+                        transform: [
+                            // Turning back in a book, the page before swings in from the spine.
+                            Rotation {
+                                origin.x: 0
+                                origin.y: stage.height / 2
+                                distanceToPlane: 3 * stage.width
+                                axis { x: 0; y: 1; z: 0 }
+                                angle: win.turnKind === "flip" && win.turnDirection < 0 ? -90 * (1 - win.turnProgress) : 0
+                            },
+                            Translate {
+                                x: win.turnKind === "slide" ? win.turnDirection * stage.width * (1 - win.turnProgress)
+                                 : win.turnKind === "cover" && win.turnDirection > 0 ? stage.width * (1 - win.turnProgress) : 0
+                            }
+                        ]
 
-                    // A paged book's page, or two side by side, fitted to the
-                    // window and then zoomed. Books keep their own reading
-                    // direction, whatever the interface's.
-                    Row {
-                        id: spreadRow
-                        objectName: "spread"
-                        readonly property int margin: 16
-                        readonly property real aspects: win.shownPages.reduce((sum, page) => sum + win.aspect(page), 0) || 1
-                        readonly property real available: view.width - 2 * margin - spacing * Math.max(0, win.shownPages.length - 1)
-                        readonly property real fitted: win.fitWidth ? available / aspects
-                                                                    : Math.min(view.height - 2 * margin, available / aspects)
-                        readonly property real pageHeight: Math.max(48, fitted * win.zoom)
-                        LayoutMirroring.enabled: false
-                        visible: backend.paged
-                        x: Math.max(margin, (view.width - width) / 2)
-                        y: margin
-                        spacing: 8
+                        Rectangle {
+                            anchors.fill: parent
+                            color: theme.background
+                        }
 
-                        Repeater {
-                            id: sheets
-                            model: win.shownPages
-                            delegate: BookPage {
-                                id: pageSheet
-                                required property int modelData
-                                page: modelData
-                                tint: win.tint
-                                highlight: theme.accent
-                                width: Math.round(spreadRow.pageHeight * win.aspect(modelData))
-                                height: Math.round(spreadRow.pageHeight)
-                                onFollow: (target, url) => target >= 0 ? win.jump(target, 0) : Qt.openUrlExternally(url)
-                                onSelectionStarted: {
-                                    prose.deselect()
-                                    for (let i = 0; i < sheets.count; ++i)
-                                        if (sheets.itemAt(i) && sheets.itemAt(i) !== pageSheet)
-                                            sheets.itemAt(i).clearSelection()
+                        Flickable {
+                            id: view
+                            objectName: "view"
+                            anchors.fill: parent
+                            clip: true
+                            // The mouse selects words; the wheel, the touchpad and the
+                            // keys move through the book.
+                            acceptedButtons: Qt.NoButton
+                            boundsBehavior: Flickable.StopAtBounds
+                            contentWidth: backend.paged ? Math.max(width, spreadRow.width + 2 * spreadRow.margin) : width
+                            contentHeight: backend.paged ? spreadRow.height + 2 * spreadRow.margin : prose.height + 2 * prose.margin
+                            ScrollBar.vertical: ScrollBar {}
+                            ScrollBar.horizontal: ScrollBar {}
+
+                            onContentYChanged: if (!win.restoring && contentHeight > height)
+                                backend.position = contentY / (contentHeight - height)
+                            onContentHeightChanged: Qt.callLater(win.restore)
+                            onHeightChanged: Qt.callLater(win.restore)
+
+                            // A paged book's page, or two side by side, fitted to the
+                            // window and then zoomed. Books keep their own reading
+                            // direction, whatever the interface's.
+                            Row {
+                                id: spreadRow
+                                objectName: "spread"
+                                readonly property int margin: 16
+                                readonly property real aspects: win.shownPages.reduce((sum, page) => sum + win.aspect(page), 0) || 1
+                                readonly property real available: view.width - 2 * margin - spacing * Math.max(0, win.shownPages.length - 1)
+                                readonly property real fitted: win.fitWidth ? available / aspects
+                                                                            : Math.min(view.height - 2 * margin, available / aspects)
+                                readonly property real pageHeight: Math.max(48, fitted * win.zoom)
+                                LayoutMirroring.enabled: false
+                                visible: backend.paged
+                                x: Math.max(margin, (view.width - width) / 2)
+                                y: margin
+                                spacing: 8
+
+                                Repeater {
+                                    id: sheets
+                                    model: win.shownPages
+                                    delegate: BookPage {
+                                        id: pageSheet
+                                        required property int modelData
+                                        page: modelData
+                                        tint: win.tint
+                                        highlight: theme.accent
+                                        width: Math.round(spreadRow.pageHeight * win.aspect(modelData))
+                                        height: Math.round(spreadRow.pageHeight)
+                                        onFollow: (target, url) => target >= 0 ? win.jump(target, 0) : Qt.openUrlExternally(url)
+                                        onSelectionStarted: {
+                                            prose.deselect()
+                                            for (let i = 0; i < sheets.count; ++i)
+                                                if (sheets.itemAt(i) && sheets.itemAt(i) !== pageSheet)
+                                                    sheets.itemAt(i).clearSelection()
+                                        }
+                                    }
+                                }
+                            }
+
+                            // A flowing book's chapter, in the theme's colors and the
+                            // reading text size. Read-only, but its words can be selected.
+                            TextEdit {
+                                id: prose
+                                objectName: "prose"
+                                readonly property int margin: 40
+                                visible: !backend.paged
+                                x: (view.width - width) / 2
+                                y: margin
+                                width: Math.max(200, Math.min(view.width - 2 * 32, win.readingSize * 34))
+                                text: backend.text
+                                textFormat: backend.textFormat
+                                baseUrl: backend.baseUrl
+                                readOnly: true
+                                selectByMouse: true
+                                persistentSelection: true
+                                // Never the keyboard's: the keys turn pages.
+                                activeFocusOnPress: false
+                                wrapMode: TextEdit.Wrap
+                                font.pixelSize: win.readingSize
+                                color: theme.foreground
+                                selectionColor: theme.accent
+                                selectedTextColor: theme.accentForeground
+                                onTextChanged: backend.spaceLines(textDocument, 1.35)
+                                onLinkActivated: link => { if (!backend.followLink(link)) Qt.openUrlExternally(link) }
+
+                                HoverHandler {
+                                    cursorShape: prose.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.IBeamCursor
                                 }
                             }
                         }
+
+                        // Shadow on a page swinging in.
+                        Rectangle {
+                            anchors.fill: parent
+                            color: "black"
+                            opacity: win.turnKind === "flip" && win.turnDirection < 0 ? 0.4 * (1 - win.turnProgress)
+                                   : win.turnKind === "cover" && win.turnDirection < 0 ? 0.25 * (1 - win.turnProgress) : 0
+                            visible: opacity > 0
+                        }
                     }
 
-                    // A flowing book's chapter, in the theme's colors and the
-                    // reading text size. Read-only, but its words can be selected.
-                    TextEdit {
-                        id: prose
-                        objectName: "prose"
-                        readonly property int margin: 40
-                        visible: !backend.paged
-                        x: (view.width - width) / 2
-                        y: margin
-                        width: Math.max(200, Math.min(view.width - 2 * 32, win.readingSize * 34))
-                        text: backend.text
-                        textFormat: backend.textFormat
-                        baseUrl: backend.baseUrl
-                        readOnly: true
-                        selectByMouse: true
-                        persistentSelection: true
-                        // Never the keyboard's: the keys turn pages.
-                        activeFocusOnPress: false
-                        wrapMode: TextEdit.Wrap
-                        font.pixelSize: win.readingSize
-                        color: theme.foreground
-                        selectionColor: theme.accent
-                        selectedTextColor: theme.accentForeground
-                        onTextChanged: backend.spaceLines(textDocument, 1.35)
-                        onLinkActivated: link => { if (!backend.followLink(link)) Qt.openUrlExternally(link) }
+                    // The picture of the page being left. Between turns it waits
+                    // out of sight, where it can still be drawn into.
+                    ShaderEffectSource {
+                        id: snapshot
+                        objectName: "snapshot"
+                        sourceItem: stage
+                        live: false
+                        width: stage.width
+                        height: stage.height
+                        x: win.turnKind === "" ? -width - 64
+                         : win.turnKind === "slide" ? -win.turnDirection * width * win.turnProgress
+                         : win.turnKind === "cover" && win.turnDirection < 0 ? width * win.turnProgress : 0
+                        z: stage.front ? 0 : 1
+                        textureSize: Qt.size(Math.ceil(width * Screen.devicePixelRatio), Math.ceil(height * Screen.devicePixelRatio))
+                        opacity: win.turnKind === "fade" ? Math.max(0, 1 - 2 * win.turnProgress) : 1
+                        transform: Rotation {
+                            // Turning forward, the page swings away about the spine.
+                            origin.x: 0
+                            origin.y: snapshot.height / 2
+                            distanceToPlane: 3 * snapshot.width
+                            axis { x: 0; y: 1; z: 0 }
+                            angle: win.turnKind === "flip" && win.turnDirection > 0 ? -90 * win.turnProgress : 0
+                        }
 
-                        HoverHandler {
-                            cursorShape: prose.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.IBeamCursor
+                        Rectangle {
+                            anchors.fill: parent
+                            color: "black"
+                            opacity: win.turnKind === "flip" && win.turnDirection > 0 ? 0.4 * win.turnProgress
+                                   : win.turnKind === "cover" && win.turnDirection > 0 ? 0.25 * win.turnProgress : 0
+                            visible: opacity > 0
                         }
                     }
                 }
@@ -877,6 +1044,7 @@ ApplicationWindow {
                     { keys: "W", action: qsTr("Fit pages to the width or the window") },
                     { keys: "D", action: qsTr("One page or two side by side") },
                     { keys: "I", action: qsTr("Color pages like the theme") },
+                    { keys: "A", action: qsTr("Change how pages turn") },
                     { keys: "F", action: qsTr("Full screen") },
                     { keys: "Esc", action: qsTr("Back to the library") },
                     { keys: "Enter  Delete", action: qsTr("Open or forget a book in the library") },
