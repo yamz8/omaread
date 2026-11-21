@@ -69,7 +69,9 @@ ApplicationWindow {
     readonly property string tint: backend.tintPages
         ? "/" + String(theme.background).slice(1, 7) + "/" + String(theme.foreground).slice(1, 7) : ""
 
-    function number(n) { return Number(n).toLocaleString(Qt.locale(), 'f', 0) }
+    // Reading the language makes every binding that formats a number
+    // re-render in the new language's digits on a switch.
+    function number(n) { return translator.language, Number(n).toLocaleString(Qt.locale(), 'f', 0) }
     function percent(p) { return qsTr("%1%").arg(number(Math.round(p * 100))) }
     function aspect(page) { return backend.aspects[page] || 0.7071 }
 
@@ -952,8 +954,8 @@ ApplicationWindow {
             LayoutMirroring.enabled: win.rightToLeft
             LayoutMirroring.childrenInherit: true
             background: null
-            Button { text: qsTr("Cancel"); flat: true; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
-            Button { text: qsTr("Go"); flat: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            Button { text: qsTr("Cancel"); flat: true; Material.roundedScale: theme.radius; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            Button { text: qsTr("Go"); flat: true; Material.roundedScale: theme.radius; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
         }
     }
 
@@ -1002,8 +1004,8 @@ ApplicationWindow {
             LayoutMirroring.enabled: win.rightToLeft
             LayoutMirroring.childrenInherit: true
             background: null
-            Button { text: qsTr("Cancel"); flat: true; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
-            Button { text: qsTr("Open"); flat: true; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            Button { text: qsTr("Cancel"); flat: true; Material.roundedScale: theme.radius; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+            Button { text: qsTr("Open"); flat: true; Material.roundedScale: theme.radius; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
         }
     }
 
