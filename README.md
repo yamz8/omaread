@@ -1,6 +1,6 @@
 # Omaread
 
-![Omaread reading an EPUB](docs/screenshot.png)
+![Omaread searching an EPUB](docs/screenshot.png)
 
 A book and document reader for [Omarchy](https://omarchy.org). It opens PDFs, EPUBs, comic archives (CBZ, CBR, CB7, CBT), Markdown and plain text, and it's driven from the keyboard. It follows the Omarchy theme and language as they change. Books flow in the theme's colors, and PDF and comic pages can be tinted to match it.
 
