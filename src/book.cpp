@@ -1,0 +1,652 @@
+#include "book.h"
+
+#include <QBuffer>
+#include <QCollator>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QImageReader>
+#include <QPdfBookmarkModel>
+#include <QPdfDocument>
+#include <QRegularExpression>
+#include <QStringDecoder>
+#include <QThread>
+#include <QUrl>
+#include <QXmlStreamReader>
+
+#include <archive.h>
+#include <archive_entry.h>
+
+#include <algorithm>
+#include <cctype>
+#include <functional>
+
+namespace {
+
+// Large enough for any real book or comic, small enough that a hostile
+// archive can't take all the memory.
+constexpr qint64 maxEntrySize = 512ll * 1024 * 1024;
+constexpr qint64 maxArchiveSize = 2048ll * 1024 * 1024;
+// Plain text is cut into sections about this long, so the window lays out a
+// chapter's worth of text at a time rather than a whole novel.
+constexpr int textSectionLength = 20000;
+
+struct Entry {
+    QString name;
+    QByteArray data;
+};
+
+// Every regular file in a ZIP, RAR, 7z or tar archive, in archive order.
+bool readArchive(const QString &path, QList<Entry> *entries, Book::Error *error) {
+    archive *a = archive_read_new();
+    archive_read_support_filter_all(a);
+    archive_read_support_format_all(a);
+    if (archive_read_open_filename(a, QFile::encodeName(path).constData(), 1 << 16) != ARCHIVE_OK) {
+        archive_read_free(a);
+        *error = Book::Error::Unreadable;
+        return false;
+    }
+    qint64 total = 0;
+    archive_entry *entry = nullptr;
+    int status = ARCHIVE_OK;
+    while ((status = archive_read_next_header(a, &entry)) == ARCHIVE_OK) {
+        if (archive_entry_filetype(entry) != AE_IFREG)
+            continue;
+        const la_int64_t size = archive_entry_size(entry);
+        if (size > maxEntrySize || (total += size) > maxArchiveSize) {
+            status = ARCHIVE_FATAL;
+            break;
+        }
+        const char *utf8 = archive_entry_pathname_utf8(entry);
+        Entry file{utf8 ? QString::fromUtf8(utf8) : QString::fromLocal8Bit(archive_entry_pathname(entry)), {}};
+        if (size > 0)
+            file.data.reserve(size);
+        char buffer[1 << 16];
+        la_ssize_t read = 0;
+        while ((read = archive_read_data(a, buffer, sizeof buffer)) > 0) {
+            if (file.data.size() + read > maxEntrySize)
+                break;
+            file.data.append(buffer, read);
+        }
+        if (read < 0) {
+            status = ARCHIVE_FATAL;
+            break;
+        }
+        entries->append(std::move(file));
+    }
+    archive_read_free(a);
+    if (status != ARCHIVE_EOF) {
+        *error = Book::Error::Unreadable;
+        return false;
+    }
+    return true;
+}
+
+// HTML's named entities aren't XML's, and an EPUB's XHTML uses them anyway.
+// QXmlStreamReader stops at the first one it doesn't know, so name them by
+// number first. An unknown one becomes a space rather than ending the parse.
+QByteArray xmlEntities(QByteArray xml) {
+    static const QHash<QByteArray, QByteArray> named = {
+        {"nbsp", "&#160;"},   {"mdash", "&#8212;"}, {"ndash", "&#8211;"}, {"hellip", "&#8230;"},
+        {"lsquo", "&#8216;"}, {"rsquo", "&#8217;"}, {"ldquo", "&#8220;"}, {"rdquo", "&#8221;"},
+        {"laquo", "&#171;"},  {"raquo", "&#187;"},  {"copy", "&#169;"},   {"reg", "&#174;"},
+        {"trade", "&#8482;"}, {"shy", "&#173;"},    {"middot", "&#183;"}, {"bull", "&#8226;"},
+        {"eacute", "&#233;"}, {"egrave", "&#232;"}, {"agrave", "&#224;"}, {"ccedil", "&#231;"},
+        {"ouml", "&#246;"},   {"uuml", "&#252;"},   {"auml", "&#228;"},   {"szlig", "&#223;"},
+        {"aring", "&#229;"},  {"oslash", "&#248;"}, {"aelig", "&#230;"},  {"thinsp", "&#8201;"},
+        {"ensp", "&#8194;"},  {"emsp", "&#8195;"},  {"zwnj", "&#8204;"},  {"zwj", "&#8205;"},
+    };
+    static const QByteArrayList builtin = {"amp", "lt", "gt", "quot", "apos"};
+    QByteArray out;
+    out.reserve(xml.size());
+    qsizetype i = 0;
+    while (i < xml.size()) {
+        const qsizetype amp = xml.indexOf('&', i);
+        if (amp < 0) {
+            out.append(xml.mid(i));
+            break;
+        }
+        out.append(xml.mid(i, amp - i));
+        qsizetype end = amp + 1;
+        while (end < xml.size() && end - amp < 12 && std::isalnum(static_cast<unsigned char>(xml[end])))
+            ++end;
+        const QByteArray name = xml.mid(amp + 1, end - amp - 1);
+        if (end < xml.size() && xml[end] == ';' && !name.isEmpty() && !builtin.contains(name)) {
+            out.append(named.value(name, " "));
+            i = end + 1;
+        } else {
+            out.append('&');
+            i = amp + 1;
+        }
+    }
+    return out;
+}
+
+// A path inside the archive, from an href relative to the file at from.
+QString resolve(const QString &from, const QString &href) {
+    const QUrl url(href);
+    if (!url.scheme().isEmpty())
+        return {};
+    const QString path = url.path(QUrl::FullyDecoded);
+    if (path.isEmpty())
+        return from;
+    const QString folder = QFileInfo(from).path();
+    QString resolved = QDir::cleanPath(folder == "." || path.startsWith('/') ? path : folder + '/' + path);
+    while (resolved.startsWith('/'))
+        resolved.remove(0, 1);
+    return resolved;
+}
+
+QString attribute(const QString &tag, const QString &name) {
+    const QRegularExpression pattern("\\b" + QRegularExpression::escape(name)
+                                         + "\\s*=\\s*(\"([^\"]*)\"|'([^']*)')",
+                                     QRegularExpression::CaseInsensitiveOption);
+    const auto match = pattern.match(tag);
+    if (!match.hasMatch())
+        return {};
+    return match.captured(2).isNull() ? match.captured(3) : match.captured(2);
+}
+
+QString decodeHtml(const QString &text) {
+    return QString(text).replace("&quot;", "\"").replace("&apos;", "'").replace("&lt;", "<").replace("&gt;", ">").replace(
+        "&amp;", "&");
+}
+
+QString escapeAttribute(const QString &text) {
+    return text.toHtmlEscaped();
+}
+
+// The parts of an inline style that shape text rather than paint it. Colors,
+// fonts and sizes are the reader's to choose, so the theme and the text size
+// apply to every book alike.
+QString keptStyle(const QString &style) {
+    static const QStringList kept = {"font-style", "font-weight", "text-align", "text-decoration", "font-variant",
+                                     "vertical-align"};
+    QStringList out;
+    for (const QString &declaration : style.split(';', Qt::SkipEmptyParts)) {
+        const QString property = declaration.section(':', 0, 0).trimmed().toLower();
+        if (kept.contains(property))
+            out << declaration.trimmed();
+    }
+    return out.join("; ");
+}
+
+QSize imageSize(const QByteArray &data) {
+    QByteArray copy = data;
+    QBuffer buffer(&copy);
+    buffer.open(QIODevice::ReadOnly);
+    QImageReader reader(&buffer);
+    return reader.size();
+}
+
+bool isImageName(const QString &name) {
+    static const QStringList extensions = {"jpg", "jpeg", "png", "webp", "gif", "bmp", "avif", "jxl", "tif", "tiff"};
+    return extensions.contains(QFileInfo(name).suffix().toLower());
+}
+
+QString decodeText(const QByteArray &bytes) {
+    QStringDecoder utf8(QStringDecoder::Utf8);
+    const QString text = utf8.decode(bytes);
+    // Not UTF-8: older text files are mostly Latin-1, which can't fail.
+    return utf8.hasError() ? QString::fromLatin1(bytes) : text;
+}
+
+} // namespace
+
+Book::~Book() = default;
+
+std::shared_ptr<Book> Book::load(const QString &path, int id, Error *error) {
+    *error = Error::None;
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isFile()) {
+        *error = Error::Missing;
+        return nullptr;
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        *error = Error::Unreadable;
+        return nullptr;
+    }
+    const QByteArray head = file.read(4096);
+    file.close();
+
+    std::shared_ptr<Book> book(new Book);
+    book->id = id;
+    book->path = info.absoluteFilePath();
+    book->title = info.completeBaseName();
+
+    const QString suffix = info.suffix().toLower();
+    const bool zip = head.startsWith("PK\x03\x04");
+    if (head.startsWith("%PDF") || suffix == "pdf")
+        book->kind = Kind::Pdf;
+    else if (suffix == "epub" || (zip && head.mid(30, 28) == "mimetypeapplication/epub+zip"))
+        book->kind = Kind::Epub;
+    else if (QStringList{"cbz", "cbr", "cb7", "cbt"}.contains(suffix) || zip)
+        book->kind = Kind::Comic;
+    else if (suffix == "md" || suffix == "markdown")
+        book->kind = Kind::Markdown;
+    else if (!head.contains('\0'))
+        book->kind = Kind::Text;
+    else {
+        *error = Error::Unsupported;
+        return nullptr;
+    }
+
+    bool loaded = false;
+    switch (book->kind) {
+    case Kind::Pdf: loaded = book->loadPdf(error); break;
+    case Kind::Epub: loaded = book->loadEpub(error); break;
+    case Kind::Comic: loaded = book->loadComic(error); break;
+    case Kind::Markdown: loaded = book->loadMarkdown(error); break;
+    case Kind::Text: loaded = book->loadText(error); break;
+    }
+    if (!loaded)
+        return nullptr;
+    if (book->sectionCount() == 0) {
+        *error = Error::Empty;
+        return nullptr;
+    }
+    return book;
+}
+
+bool Book::loadPdf(Error *error) {
+    m_pdf = std::make_unique<QPdfDocument>();
+    switch (m_pdf->load(path)) {
+    case QPdfDocument::Error::None: break;
+    case QPdfDocument::Error::FileNotFound: *error = Error::Missing; return false;
+    case QPdfDocument::Error::IncorrectPassword:
+    case QPdfDocument::Error::UnsupportedSecurityScheme: *error = Error::Locked; return false;
+    default: *error = Error::Unreadable; return false;
+    }
+    const QString metaTitle = m_pdf->metaData(QPdfDocument::MetaDataField::Title).toString().trimmed();
+    if (!metaTitle.isEmpty())
+        title = metaTitle;
+    author = m_pdf->metaData(QPdfDocument::MetaDataField::Author).toString().trimmed();
+    for (int page = 0; page < m_pdf->pageCount(); ++page) {
+        const QSizeF size = m_pdf->pagePointSize(page);
+        aspects << (size.height() > 0 ? size.width() / size.height() : 1.0 / 1.4142);
+    }
+
+    QPdfBookmarkModel bookmarks;
+    bookmarks.setDocument(m_pdf.get());
+    std::function<void(const QModelIndex &)> walk = [&](const QModelIndex &parent) {
+        for (int row = 0; row < bookmarks.rowCount(parent); ++row) {
+            const QModelIndex index = bookmarks.index(row, 0, parent);
+            toc << TocEntry{index.data(int(QPdfBookmarkModel::Role::Title)).toString().simplified(),
+                            std::clamp(index.data(int(QPdfBookmarkModel::Role::Page)).toInt(), 0,
+                                       int(aspects.size()) - 1),
+                            index.data(int(QPdfBookmarkModel::Role::Level)).toInt()};
+            walk(index);
+        }
+    };
+    walk({});
+    bookmarks.setDocument(nullptr);
+
+    // Loaded on a worker thread, drawn from the provider's; it belongs to the
+    // application's thread like every object the backend keeps.
+    if (QCoreApplication::instance())
+        m_pdf->moveToThread(QCoreApplication::instance()->thread());
+    return true;
+}
+
+bool Book::loadEpub(Error *error) {
+    QList<Entry> entries;
+    if (!readArchive(path, &entries, error))
+        return false;
+    QHash<QString, QByteArray> files;
+    for (Entry &entry : entries)
+        files.insert(entry.name, std::move(entry.data));
+
+    QXmlStreamReader container(files.value("META-INF/container.xml"));
+    QString opfPath;
+    while (!container.atEnd() && opfPath.isEmpty())
+        if (container.readNext() == QXmlStreamReader::StartElement && container.name() == u"rootfile")
+            opfPath = container.attributes().value("full-path").toString();
+    if (opfPath.isEmpty() || !files.contains(opfPath)) {
+        *error = Error::Unreadable;
+        return false;
+    }
+
+    struct Item {
+        QString path, type, properties;
+    };
+    QHash<QString, Item> manifest;
+    QStringList spine;
+    QString ncxId;
+    QXmlStreamReader opf(xmlEntities(files.value(opfPath)));
+    while (!opf.atEnd()) {
+        if (opf.readNext() != QXmlStreamReader::StartElement)
+            continue;
+        const auto name = opf.name();
+        const auto attributes = opf.attributes();
+        if (name == u"title" && opf.namespaceUri().contains(u"purl.org/dc")) {
+            const QString text = opf.readElementText(QXmlStreamReader::IncludeChildElements).simplified();
+            if (!text.isEmpty() && title == QFileInfo(path).completeBaseName())
+                title = text;
+        } else if (name == u"creator" && author.isEmpty()) {
+            author = opf.readElementText(QXmlStreamReader::IncludeChildElements).simplified();
+        } else if (name == u"item") {
+            manifest.insert(attributes.value("id").toString(),
+                            {resolve(opfPath, attributes.value("href").toString()),
+                             attributes.value("media-type").toString(), attributes.value("properties").toString()});
+        } else if (name == u"spine") {
+            ncxId = attributes.value("toc").toString();
+        } else if (name == u"itemref") {
+            const Item item = manifest.value(attributes.value("idref").toString());
+            if (!item.path.isEmpty() && files.contains(item.path))
+                spine << item.path;
+        }
+    }
+    m_chapterPaths = spine;
+
+    // The images chapters show stay in the book, drawn by the provider on demand.
+    QHash<QString, QSize> imageSizes;
+    for (const Item &item : std::as_const(manifest)) {
+        if (item.type.startsWith("image/") && files.contains(item.path)) {
+            m_resources.insert(item.path, files.value(item.path));
+            imageSizes.insert(item.path, imageSize(files.value(item.path)));
+        }
+    }
+
+    auto image = [&](const QString &chapter, const QString &src, const QString &alt) {
+        const QString resource = resolve(chapter, decodeHtml(src));
+        if (!m_resources.contains(resource))
+            return alt.isEmpty() ? QString() : "<i>" + escapeAttribute(alt) + "</i>";
+        const QSize size = imageSizes.value(resource);
+        QString tag = "<img src=\"" + resourceUrl(id, resource) + "\"";
+        if (size.isValid())
+            tag += QString(" width=\"%1\" height=\"%2\"").arg(size.width()).arg(size.height());
+        return tag + " />";
+    };
+
+    static const QRegularExpression bodyPattern("<body[^>]*>(.*)</body>", QRegularExpression::DotMatchesEverythingOption
+                                                                              | QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression dropPattern("<(script|style|head)\\b.*?</\\1\\s*>|<\\?xml.*?\\?>|<!--.*?-->",
+                                                QRegularExpression::DotMatchesEverythingOption
+                                                    | QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression svgPattern("<svg\\b.*?</svg\\s*>", QRegularExpression::DotMatchesEverythingOption
+                                                                           | QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression svgImagePattern("<image\\b[^>]*>", QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression imgPattern("<img\\b[^>]*>", QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression linkPattern("<a\\b[^>]*>", QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression stylePattern("\\sstyle\\s*=\\s*(\"[^\"]*\"|'[^']*')",
+                                                 QRegularExpression::CaseInsensitiveOption);
+
+    auto replaceAll = [](const QString &text, const QRegularExpression &pattern,
+                         const std::function<QString(const QRegularExpressionMatch &)> &with) {
+        QString out;
+        qsizetype last = 0;
+        for (auto it = pattern.globalMatch(text); it.hasNext();) {
+            const auto match = it.next();
+            out += text.mid(last, match.capturedStart() - last) + with(match);
+            last = match.capturedEnd();
+        }
+        return out + text.mid(last);
+    };
+
+    for (int index = 0; index < spine.size(); ++index) {
+        const QString &chapter = spine[index];
+        QString html = decodeText(files.value(chapter));
+        const auto body = bodyPattern.match(html);
+        if (body.hasMatch())
+            html = body.captured(1);
+        html.remove(dropPattern);
+        // Images first, so the ones the SVG pass makes aren't rewritten again.
+        html = replaceAll(html, imgPattern, [&](const QRegularExpressionMatch &match) {
+            return image(chapter, attribute(match.captured(), "src"), decodeHtml(attribute(match.captured(), "alt")));
+        });
+        // A cover is often an SVG wrapping one image: keep only the image.
+        html = replaceAll(html, svgPattern, [&](const QRegularExpressionMatch &svg) {
+            QString images;
+            for (auto it = svgImagePattern.globalMatch(svg.captured()); it.hasNext();) {
+                const QString tag = it.next().captured();
+                QString href = attribute(tag, "xlink:href");
+                if (href.isEmpty())
+                    href = attribute(tag, "href");
+                images += image(chapter, href, {});
+            }
+            return images;
+        });
+        // Links to other chapters are followed inside the reader; the rest
+        // open in the browser.
+        html = replaceAll(html, linkPattern, [&](const QRegularExpressionMatch &match) {
+            const QString href = decodeHtml(attribute(match.captured(), "href"));
+            if (href.isEmpty())
+                return QString("<a>");
+            if (!QUrl(href).scheme().isEmpty())
+                return "<a href=\"" + escapeAttribute(href) + "\">";
+            const int target = int(spine.indexOf(resolve(chapter, href)));
+            return target < 0 ? QString("<a>") : QString("<a href=\"omaread:%1\">").arg(target);
+        });
+        html = replaceAll(html, stylePattern, [&](const QRegularExpressionMatch &match) {
+            const QString style = keptStyle(decodeHtml(match.captured(1).mid(1, match.captured(1).size() - 2)));
+            return style.isEmpty() ? QString() : " style=\"" + escapeAttribute(style) + "\"";
+        });
+        sections << html.trimmed();
+        aspects << 0;
+    }
+
+    // The table of contents: EPUB 3's nav document, or EPUB 2's NCX.
+    QString navPath, ncxPath = manifest.value(ncxId).path;
+    for (const Item &item : std::as_const(manifest)) {
+        if (item.properties.split(' ').contains("nav"))
+            navPath = item.path;
+        if (ncxPath.isEmpty() && item.type == "application/x-dtbncx+xml")
+            ncxPath = item.path;
+    }
+    auto addEntry = [&](const QString &from, const QString &entryTitle, const QString &href, int depth) {
+        const int section = int(spine.indexOf(resolve(from, href)));
+        if (section >= 0 && !entryTitle.isEmpty())
+            toc << TocEntry{entryTitle, section, std::max(0, depth)};
+    };
+    if (!navPath.isEmpty()) {
+        QXmlStreamReader nav(xmlEntities(files.value(navPath)));
+        int navDepth = 0, listDepth = 0;
+        bool inToc = false;
+        while (!nav.atEnd()) {
+            const auto token = nav.readNext();
+            if (token == QXmlStreamReader::StartElement) {
+                if (nav.name() == u"nav") {
+                    ++navDepth;
+                    const QString type = nav.attributes().value("http://www.idpf.org/2007/ops", "type").toString();
+                    inToc = type.split(' ').contains("toc");
+                } else if (inToc && nav.name() == u"ol") {
+                    ++listDepth;
+                } else if (inToc && nav.name() == u"a") {
+                    const QString href = nav.attributes().value("href").toString();
+                    addEntry(navPath, nav.readElementText(QXmlStreamReader::IncludeChildElements).simplified(), href,
+                             listDepth - 1);
+                }
+            } else if (token == QXmlStreamReader::EndElement) {
+                if (nav.name() == u"nav" && --navDepth == 0)
+                    inToc = false;
+                else if (inToc && nav.name() == u"ol")
+                    --listDepth;
+            }
+        }
+    }
+    if (toc.isEmpty() && !ncxPath.isEmpty()) {
+        QXmlStreamReader ncx(xmlEntities(files.value(ncxPath)));
+        int depth = -1;
+        QString label;
+        while (!ncx.atEnd()) {
+            const auto token = ncx.readNext();
+            if (token == QXmlStreamReader::StartElement) {
+                if (ncx.name() == u"navPoint")
+                    ++depth;
+                else if (ncx.name() == u"text" && depth >= 0)
+                    label = ncx.readElementText().simplified();
+                else if (ncx.name() == u"content" && depth >= 0)
+                    addEntry(ncxPath, label, ncx.attributes().value("src").toString(), depth);
+            } else if (token == QXmlStreamReader::EndElement && ncx.name() == u"navPoint") {
+                --depth;
+            }
+        }
+    }
+    return true;
+}
+
+bool Book::loadComic(Error *error) {
+    QList<Entry> entries;
+    if (!readArchive(path, &entries, error))
+        return false;
+    entries.removeIf([](const Entry &entry) {
+        const QString name = QFileInfo(entry.name).fileName();
+        return !isImageName(entry.name) || name.startsWith('.') || entry.name.startsWith("__MACOSX/");
+    });
+    // Pages are numbered by name, and page10 comes after page9.
+    QCollator collator;
+    collator.setNumericMode(true);
+    collator.setCaseSensitivity(Qt::CaseInsensitive);
+    std::sort(entries.begin(), entries.end(),
+              [&](const Entry &a, const Entry &b) { return collator.compare(a.name, b.name) < 0; });
+    for (Entry &entry : entries) {
+        const QSize size = imageSize(entry.data);
+        if (!size.isValid())
+            continue;
+        aspects << double(size.width()) / size.height();
+        m_pages << std::move(entry.data);
+    }
+    return true;
+}
+
+bool Book::loadMarkdown(Error *error) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        *error = Error::Unreadable;
+        return false;
+    }
+    const QString text = decodeText(file.readAll());
+    static const QRegularExpression heading("^(#{1,2})[ \\t]+(.+?)[ \\t#]*$");
+    static const QRegularExpression fence("^\\s*(```|~~~)");
+    // A chapter starts at every first- and second-level heading outside code.
+    QString current;
+    bool inFence = false, titled = false;
+    for (const QString &line : text.split('\n')) {
+        if (fence.match(line).hasMatch())
+            inFence = !inFence;
+        const auto match = inFence ? QRegularExpressionMatch() : heading.match(line);
+        if (match.hasMatch()) {
+            if (!current.trimmed().isEmpty()) {
+                sections << current;
+                aspects << 0;
+            }
+            current.clear();
+            toc << TocEntry{match.captured(2).trimmed(), int(sections.size()), int(match.captured(1).size()) - 1};
+            if (!titled && match.captured(1) == "#") {
+                title = match.captured(2).trimmed();
+                titled = true;
+            }
+        }
+        current += line + '\n';
+    }
+    if (!current.trimmed().isEmpty() || sections.isEmpty()) {
+        sections << current;
+        aspects << 0;
+    }
+    // A heading at the very end, with nothing under it, has no section.
+    toc.removeIf([&](const TocEntry &entry) { return entry.section >= sections.size(); });
+    return true;
+}
+
+bool Book::loadText(Error *error) {
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        *error = Error::Unreadable;
+        return false;
+    }
+    const QString text = decodeText(file.readAll()).replace("\r\n", "\n");
+    // Cut at paragraph breaks, never inside one.
+    QString current;
+    for (const QString &paragraph : text.split("\n\n")) {
+        if (!current.isEmpty() && current.size() + paragraph.size() > textSectionLength) {
+            sections << current;
+            aspects << 0;
+            current.clear();
+        }
+        current += (current.isEmpty() ? "" : "\n\n") + paragraph;
+    }
+    if (!current.isEmpty() || sections.isEmpty()) {
+        sections << current;
+        aspects << 0;
+    }
+    return true;
+}
+
+int Book::sectionForLink(const QString &link) const {
+    if (!link.startsWith("omaread:"))
+        return -1;
+    bool ok = false;
+    const int section = link.mid(8).toInt(&ok);
+    return ok && section >= 0 && section < sectionCount() ? section : -1;
+}
+
+QImage Book::renderPage(int page, const QSize &requested, const QColor &background, const QColor &foreground) const {
+    if (page < 0 || page >= aspects.size())
+        return {};
+    const double aspect = aspects[page];
+    QSize size = requested;
+    if (!size.isValid() || size.isEmpty())
+        size = QSize(1200, int(1200 / aspect));
+    else
+        size = QSizeF(aspect, 1).scaled(QSizeF(size), Qt::KeepAspectRatio).toSize();
+    size = size.boundedTo(QSize(8000, 8000)).expandedTo(QSize(1, 1));
+
+    QImage image;
+    if (kind == Kind::Pdf) {
+        QMutexLocker lock(&m_mutex);
+        image = m_pdf->render(page, size, {}, QImage::Format_ARGB32, Qt::white).convertToFormat(QImage::Format_RGB32);
+    } else if (page < m_pages.size()) {
+        image = QImage::fromData(m_pages[page]);
+        if (!image.isNull())
+            image = image.scaled(size, Qt::KeepAspectRatio, Qt::SmoothTransformation).convertToFormat(QImage::Format_RGB32);
+    }
+    if (image.isNull() || !background.isValid() || !foreground.isValid())
+        return image;
+
+    // A tint keeps the page's lightness and swaps its colors for the theme's:
+    // white paper becomes the background and black ink the foreground.
+    QRgb ramp[256];
+    for (int level = 0; level < 256; ++level) {
+        const double t = level / 255.0;
+        ramp[level] = qRgb(int(foreground.red() + (background.red() - foreground.red()) * t),
+                           int(foreground.green() + (background.green() - foreground.green()) * t),
+                           int(foreground.blue() + (background.blue() - foreground.blue()) * t));
+    }
+    for (int y = 0; y < image.height(); ++y) {
+        auto *line = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x)
+            line[x] = ramp[qGray(line[x])];
+    }
+    return image;
+}
+
+QImage Book::resource(const QString &resourcePath) const {
+    const auto it = m_resources.constFind(resourcePath);
+    return it == m_resources.cend() ? QImage() : QImage::fromData(*it);
+}
+
+QString Book::resourceUrl(int bookId, const QString &resourcePath) {
+    return QString("image://omaread/res/%1/%2").arg(bookId).arg(QString::fromLatin1(resourcePath.toUtf8().toHex()));
+}
+
+QString Book::fitImages(const QString &html, int width) {
+    if (width <= 0)
+        return html;
+    static const QRegularExpression sized("<img src=\"([^\"]*)\" width=\"(\\d+)\" height=\"(\\d+)\"");
+    QString out;
+    qsizetype last = 0;
+    for (auto it = sized.globalMatch(html); it.hasNext();) {
+        const auto match = it.next();
+        const int w = match.captured(2).toInt(), h = match.captured(3).toInt();
+        out += html.mid(last, match.capturedStart() - last);
+        if (w > width && w > 0)
+            out += QString("<img src=\"%1\" width=\"%2\" height=\"%3\"").arg(match.captured(1)).arg(width).arg(
+                qMax(1, int(double(h) * width / w)));
+        else
+            out += match.captured();
+        last = match.capturedEnd();
+    }
+    return out + html.mid(last);
+}

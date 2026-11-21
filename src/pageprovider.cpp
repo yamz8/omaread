@@ -1,0 +1,29 @@
+#include "pageprovider.h"
+
+QImage PageProvider::requestImage(const QString &id, QSize *size, const QSize &requestedSize) {
+    QImage result;
+    if (const auto book = m_open->get())
+        result = image(*book, id, requestedSize);
+    if (size)
+        *size = result.size();
+    return result;
+}
+
+QImage PageProvider::image(const Book &book, const QString &id, const QSize &requestedSize) {
+    const QStringList parts = id.split('/');
+    if (parts.size() < 3 || parts[1].toInt() != book.id)
+        return {};
+    if (parts[0] == "page") {
+        const QColor background = parts.size() >= 5 ? QColor("#" + parts[3]) : QColor();
+        const QColor foreground = parts.size() >= 5 ? QColor("#" + parts[4]) : QColor();
+        return book.renderPage(parts[2].toInt(), requestedSize, background, foreground);
+    }
+    if (parts[0] == "res") {
+        QImage image = book.resource(QString::fromUtf8(QByteArray::fromHex(parts[2].toLatin1())));
+        if (!image.isNull() && requestedSize.isValid() && !requestedSize.isEmpty()
+            && (image.width() > requestedSize.width() || image.height() > requestedSize.height()))
+            image = image.scaled(requestedSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        return image;
+    }
+    return {};
+}

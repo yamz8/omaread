@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Omaread
+Name[da]=Omaread
+GenericName=Book Reader
+GenericName[da]=Boglæser
+Comment=Read books and documents: PDF, EPUB, comics, Markdown and text
+Comment[da]=Læs bøger og dokumenter: PDF, EPUB, tegneserier, Markdown og tekst
+Exec=omaread %f
+Icon=omaread
+Terminal=false
+Categories=Office;Viewer;
+Keywords=ebook;epub;pdf;comic;cbz;reader;book;
+MimeType=application/pdf;application/epub+zip;application/vnd.comicbook+zip;application/x-cbz;application/vnd.comicbook-rar;application/x-cbr;text/markdown;text/plain;
+StartupWMClass=omaread

@@ -1,0 +1,794 @@
+#include <QDir>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QLocalServer>
+#include <QLocalSocket>
+#include <QQmlApplicationEngine>
+#include <QQmlContext>
+#include <QQuickItem>
+#include <QQuickStyle>
+#include <QQuickWindow>
+#include <QRegularExpression>
+#include <QTemporaryDir>
+#include <QtTest>
+
+#include <QBuffer>
+#include <QPainter>
+#include <QPdfWriter>
+#include <QSignalSpy>
+
+#include <archive.h>
+#include <archive_entry.h>
+
+#include "backend.h"
+#include "book.h"
+#include "filepicker.h"
+#include "pageprovider.h"
+#include "theme.h"
+#include "translator.h"
+
+namespace {
+
+bool write(const QString &path, const QByteArray &contents) {
+    QFile file(path);
+    return file.open(QIODevice::WriteOnly) && file.write(contents) == contents.size();
+}
+
+int lines(const QString &path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll().count('\n') : 0;
+}
+
+// The window's item with this objectName. What a Repeater, ListView or Loader
+// makes isn't a QObject child of the window, so findChild never finds it; walk
+// the items instead. Popups aren't items: find those with findChild.
+QQuickItem *item(QQuickItem *from, const QString &name) {
+    for (auto *child : from->childItems()) {
+        if (child->objectName() == name)
+            return child;
+        if (auto *found = item(child, name))
+            return found;
+    }
+    return nullptr;
+}
+
+// A hyprctl that answers with response.json beside it and counts its calls.
+QString fakeHyprctl(const QString &directory) {
+    const QString command = directory + "/hyprctl";
+    write(command, "#!/bin/bash\necho >> '" + directory.toUtf8() + "/calls'\ncat '" + directory.toUtf8()
+                       + "/response.json'\n");
+    QFile::setPermissions(command, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    return command;
+}
+
+QJsonObject readCatalog(const QString &path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(file.readAll()).object() : QJsonObject();
+}
+
+// The placeholders in a text, sorted: %1 to %99, and the count (%n, %Ln).
+QStringList placeholders(const QString &text) {
+    static const QRegularExpression placeholder("%L?(?:[1-9][0-9]?|n)");
+    QStringList found;
+    for (auto it = placeholder.globalMatch(text); it.hasNext();)
+        found << it.next().captured();
+    found.sort();
+    return found;
+}
+
+// Every text the sources hand to qsTr() or tr(), and whether a call passes it
+// a count. It walks the code a token at a time, so a string never hides a
+// comment or the other way round, C++'s adjacent literals join, and QML's
+// single quotes count. A text that isn't a literal can't be in a catalog.
+QMap<QString, bool> translatables(const QString &folder, QStringList *problems) {
+    QMap<QString, bool> found;
+    for (const QFileInfo &info : QDir(folder).entryInfoList({"*.qml", "*.js", "*.cpp", "*.h"}, QDir::Files)) {
+        QFile file(info.filePath());
+        if (!file.open(QIODevice::ReadOnly))
+            continue;
+        const QString code = QString::fromUtf8(file.readAll());
+        qsizetype i = 0;
+        auto literal = [&](QString *text) {
+            const QChar quote = code[i++];
+            for (; i < code.size() && code[i] != quote; ++i) {
+                if (code[i] == '\\' && i + 1 < code.size()) {
+                    const QChar escaped = code[++i];
+                    const int digits = escaped == 'u' ? 4 : escaped == 'x' ? 2 : 0;
+                    bool hex = false;
+                    const ushort unit = code.mid(i + 1, digits).toUShort(&hex, 16);
+                    if (digits && hex) {
+                        *text += QChar(unit);
+                        i += digits;
+                    } else {
+                        *text += escaped == 'n' ? QChar('\n') : escaped == 't' ? QChar('\t') : escaped;
+                    }
+                } else {
+                    *text += code[i];
+                }
+            }
+            ++i;
+        };
+        auto skipSpace = [&] {
+            while (i < code.size() && code[i].isSpace())
+                ++i;
+        };
+        while (i < code.size()) {
+            const QChar c = code[i];
+            if (code.mid(i, 2) == "//") {
+                i = code.indexOf('\n', i);
+                if (i < 0)
+                    break;
+            } else if (code.mid(i, 2) == "/*") {
+                i = code.indexOf("*/", i + 2);
+                if (i < 0)
+                    break;
+                i += 2;
+            } else if (c == '"' || c == '\'') {
+                QString skipped;
+                literal(&skipped);
+            } else if (c.isLetter() || c == '_') {
+                const qsizetype start = i;
+                while (i < code.size() && (code[i].isLetterOrNumber() || code[i] == '_'))
+                    ++i;
+                const QString word = code.mid(start, i - start);
+                skipSpace();
+                if ((word != "qsTr" && word != "tr") || i >= code.size() || code[i] != '(')
+                    continue;
+                ++i;
+                skipSpace();
+                if (i >= code.size() || (code[i] != '"' && code[i] != '\'')) {
+                    *problems << info.fileName() + ": not a literal: " + code.mid(start, 40);
+                    continue;
+                }
+                QString text;
+                do {
+                    literal(&text);
+                    skipSpace();
+                } while (i < code.size() && code[i] == '"');
+                // The arguments after the text, to the call's closing parenthesis.
+                int depth = 0, commas = 0;
+                while (i < code.size()) {
+                    const QChar d = code[i];
+                    if (d == '"' || d == '\'') {
+                        QString skipped;
+                        literal(&skipped);
+                        continue;
+                    }
+                    if (d == '(' || d == '[' || d == '{')
+                        ++depth;
+                    else if ((d == ')' || d == ']' || d == '}') && depth-- == 0)
+                        break;
+                    else if (d == ',' && depth == 0)
+                        ++commas;
+                    ++i;
+                }
+                found[text] = found.value(text) || commas >= 2;
+            } else {
+                ++i;
+            }
+        }
+    }
+    return found;
+}
+
+
+// A ZIP with these files, in this order, as EPUBs and comics are.
+bool writeZip(const QString &path, const QList<QPair<QString, QByteArray>> &files) {
+    archive *a = archive_write_new();
+    archive_write_set_format_zip(a);
+    if (archive_write_open_filename(a, QFile::encodeName(path).constData()) != ARCHIVE_OK) {
+        archive_write_free(a);
+        return false;
+    }
+    for (const auto &[name, data] : files) {
+        archive_entry *entry = archive_entry_new();
+        archive_entry_set_pathname(entry, name.toUtf8().constData());
+        archive_entry_set_size(entry, data.size());
+        archive_entry_set_filetype(entry, AE_IFREG);
+        archive_entry_set_perm(entry, 0644);
+        archive_write_header(a, entry);
+        archive_write_data(a, data.constData(), data.size());
+        archive_entry_free(entry);
+    }
+    archive_write_close(a);
+    archive_write_free(a);
+    return true;
+}
+
+QByteArray png(int width, int height, QColor color = Qt::red) {
+    QImage image(width, height, QImage::Format_RGB32);
+    image.fill(color);
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    image.save(&buffer, "PNG");
+    return bytes;
+}
+
+// A three-chapter EPUB: a cover that is an SVG around an image, a chapter
+// with an image, a link and inline styles, and a last chapter. EPUB 3 books
+// carry a nav document; with ncx set, it is an EPUB 2 book with an NCX instead.
+QString writeEpub(const QString &folder, bool ncx = false) {
+    const QString path = folder + (ncx ? "/old.epub" : "/book.epub");
+    const QByteArray container = R"(<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>)";
+    const QByteArray opf = QByteArray(R"(<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>A Small &amp; Quiet Book</dc:title>
+    <dc:creator>Ada Writer</dc:creator>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="cover" href="text/cover.xhtml" media-type="application/xhtml+xml"/>
+    <item id="one" href="text/one.xhtml" media-type="application/xhtml+xml"/>
+    <item id="two" href="text/two%20b.xhtml" media-type="application/xhtml+xml"/>
+    <item id="pic" href="images/pic.png" media-type="image/png"/>
+    <item id="wide" href="images/wide.png" media-type="image/png"/>
+  </manifest>
+  <spine toc="ncx"><itemref idref="cover"/><itemref idref="one"/><itemref idref="two"/></spine>
+</package>)");
+    const QByteArray nav = R"(<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body>
+<nav epub:type="landmarks"><ol><li><a href="text/cover.xhtml">Cover</a></li></ol></nav>
+<nav epub:type="toc"><ol>
+  <li><a href="text/one.xhtml">One&nbsp;Begins</a>
+    <ol><li><a href="text/two%20b.xhtml#later">Two, <em>Later</em></a></li></ol></li>
+</ol></nav></body></html>)";
+    const QByteArray toc = R"(<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap>
+  <navPoint id="a"><navLabel><text>First</text></navLabel><content src="text/one.xhtml"/>
+    <navPoint id="b"><navLabel><text>Second</text></navLabel><content src="text/two%20b.xhtml"/></navPoint>
+  </navPoint>
+</navMap></ncx>)";
+    const QByteArray cover = R"(<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>Cover</title><style>p { color: red }</style></head>
+<body><svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 40 60">
+<image width="40" height="60" xlink:href="../images/pic.png"/></svg></body></html>)";
+    const QByteArray one = R"(<?xml version="1.0" encoding="utf-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head>
+<body><h1>One</h1><p style="color: red; font-style: italic">It began&nbsp;quietly.</p>
+<p><img src="../images/wide.png" alt="A wide picture"/></p>
+<p><a href="two%20b.xhtml#later">Skip ahead</a> or <a href="https://example.com/">read more</a>.</p>
+<script>alert(1)</script></body></html>)";
+    const QByteArray two = R"(<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="later">Two</h1><p>The end.</p></body></html>)";
+    QList<QPair<QString, QByteArray>> files = {{"mimetype", "application/epub+zip"},
+                                               {"META-INF/container.xml", container},
+                                               {"OEBPS/content.opf", ncx ? QByteArray(opf).replace(" properties=\"nav\"", "") : opf},
+                                               {"OEBPS/toc.ncx", toc},
+                                               {"OEBPS/text/cover.xhtml", cover},
+                                               {"OEBPS/text/one.xhtml", one},
+                                               {"OEBPS/text/two b.xhtml", two},
+                                               {"OEBPS/images/pic.png", png(40, 60)},
+                                               {"OEBPS/images/wide.png", png(2000, 500)}};
+    if (!ncx)
+        files.insert(3, {"OEBPS/nav.xhtml", nav});
+    return writeZip(path, files) ? path : QString();
+}
+
+// A PDF of A5 pages, each saying its number.
+QString writePdf(const QString &folder, int pages) {
+    const QString path = folder + "/paper.pdf";
+    QPdfWriter writer(path);
+    writer.setPageSize(QPageSize(QPageSize::A5));
+    writer.setTitle("Paper");
+    QPainter painter(&writer);
+    for (int page = 0; page < pages; ++page) {
+        if (page > 0)
+            writer.newPage();
+        painter.setFont(QFont("sans", 40));
+        painter.drawText(QRect(0, 0, writer.width(), writer.height() / 2), Qt::AlignCenter, QString::number(page + 1));
+    }
+    painter.end();
+    return path;
+}
+
+QString writeText(const QString &path, const QByteArray &text) {
+    return write(path, text) ? path : QString();
+}
+
+// Counts the times the window asks for a file, in place of the portal.
+class FakePicker : public FilePicker {
+public:
+    int asked = 0;
+    void openDocument() override { ++asked; }
+};
+
+} // namespace
+
+class OmareadTests : public QObject {
+    Q_OBJECT
+
+private slots:
+    void initTestCase() { QQuickStyle::setStyle("Material"); }
+
+    void epubReadsChaptersAndContents() {
+        QTemporaryDir dir;
+        Book::Error error;
+        const auto book = Book::load(writeEpub(dir.path()), 7, &error);
+        QVERIFY(book);
+        QCOMPARE(book->kind, Book::Kind::Epub);
+        QCOMPARE(book->title, QString("A Small & Quiet Book"));
+        QCOMPARE(book->author, QString("Ada Writer"));
+        QCOMPARE(book->sectionCount(), 3);
+        QVERIFY(!book->paged());
+
+        // Only the nav document's toc counts, nested as it is.
+        QCOMPARE(book->toc.size(), 2);
+        QCOMPARE(book->toc[0].title, QString("One Begins"));
+        QCOMPARE(book->toc[0].section, 1);
+        QCOMPARE(book->toc[0].depth, 0);
+        QCOMPARE(book->toc[1].title, QString("Two, Later"));
+        QCOMPARE(book->toc[1].section, 2);
+        QCOMPARE(book->toc[1].depth, 1);
+
+        // The cover's SVG becomes its image.
+        QVERIFY(book->sections[0].contains(Book::resourceUrl(7, "OEBPS/images/pic.png")));
+        QVERIFY(!book->sections[0].contains("svg"));
+        QVERIFY(!book->sections[0].contains("color"));
+
+        const QString one = book->sections[1];
+        QVERIFY(one.contains("It began"));
+        QVERIFY(!one.contains("alert"));
+        QVERIFY(!one.contains("color"));
+        QVERIFY(one.contains("font-style: italic"));
+        QVERIFY(one.contains(Book::resourceUrl(7, "OEBPS/images/wide.png") + "\" width=\"2000\" height=\"500\""));
+        QVERIFY(one.contains("href=\"omaread:2\""));
+        QVERIFY(one.contains("href=\"https://example.com/\""));
+        QCOMPARE(book->sectionForLink("omaread:2"), 2);
+        QCOMPARE(book->sectionForLink("omaread:9"), -1);
+        QVERIFY(!book->resource("OEBPS/images/pic.png").isNull());
+
+        // Images never come out wider than the text.
+        QVERIFY(Book::fitImages(one, 500).contains("width=\"500\" height=\"125\""));
+    }
+
+    void epubFallsBackToTheNcx() {
+        QTemporaryDir dir;
+        Book::Error error;
+        const auto book = Book::load(writeEpub(dir.path(), true), 1, &error);
+        QVERIFY(book);
+        QCOMPARE(book->toc.size(), 2);
+        QCOMPARE(book->toc[0].title, QString("First"));
+        QCOMPARE(book->toc[1].section, 2);
+        QCOMPARE(book->toc[1].depth, 1);
+    }
+
+    void pdfDrawsItsPages() {
+        QTemporaryDir dir;
+        Book::Error error;
+        const auto book = Book::load(writePdf(dir.path(), 3), 3, &error);
+        QVERIFY(book);
+        QCOMPARE(book->kind, Book::Kind::Pdf);
+        QCOMPARE(book->title, QString("Paper"));
+        QCOMPARE(book->sectionCount(), 3);
+        QVERIFY(book->paged());
+        QVERIFY(qAbs(book->aspects[0] - 148.0 / 210.0) < 0.01);
+
+        const QImage page = book->renderPage(1, QSize(300, 600));
+        QCOMPARE(page.width(), 300);
+        QCOMPARE(QColor(page.pixel(2, 2)), QColor(Qt::white));
+        // Tinted, the paper takes the theme's background.
+        const QImage tinted = book->renderPage(1, QSize(300, 600), QColor("#101010"), QColor("#eeeeee"));
+        QCOMPARE(QColor(tinted.pixel(2, 2)), QColor("#101010"));
+    }
+
+    void comicOrdersPagesByNumber() {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("comic.cbz");
+        QVERIFY(writeZip(path, {{"page10.png", png(30, 20)},
+                                {"page2.png", png(20, 20)},
+                                {"notes.txt", "not a page"},
+                                {"__MACOSX/page1.png", "junk"},
+                                {"page1.png", png(10, 20)}}));
+        Book::Error error;
+        const auto book = Book::load(path, 1, &error);
+        QVERIFY(book);
+        QCOMPARE(book->kind, Book::Kind::Comic);
+        QCOMPARE(book->aspects, QList<double>({0.5, 1.0, 1.5}));
+        QCOMPARE(book->renderPage(2, QSize(300, 200)).size(), QSize(300, 200));
+    }
+
+    void markdownBreaksAtHeadings() {
+        QTemporaryDir dir;
+        const QString path = writeText(dir.filePath("notes.md"),
+                                       "# Field Notes\nIntro.\n\n## One\nText.\n```\n# not a heading\n```\n## Two ##\nMore.\n");
+        Book::Error error;
+        const auto book = Book::load(path, 1, &error);
+        QVERIFY(book);
+        QCOMPARE(book->kind, Book::Kind::Markdown);
+        QCOMPARE(book->title, QString("Field Notes"));
+        QCOMPARE(book->sectionCount(), 3);
+        QVERIFY(book->sections[1].contains("# not a heading"));
+        QCOMPARE(book->toc.size(), 3);
+        QCOMPARE(book->toc[2].title, QString("Two"));
+        QCOMPARE(book->toc[2].section, 2);
+        QCOMPARE(book->toc[2].depth, 1);
+    }
+
+    void textBreaksBetweenParagraphs() {
+        QTemporaryDir dir;
+        QStringList paragraphs;
+        for (int i = 0; i < 3000; ++i)
+            paragraphs << QString("Paragraph %1 of a long story.").arg(i);
+        const QString text = paragraphs.join("\n\n");
+        Book::Error error;
+        const auto book = Book::load(writeText(dir.filePath("story.txt"), text.toUtf8()), 1, &error);
+        QVERIFY(book);
+        QCOMPARE(book->kind, Book::Kind::Text);
+        QVERIFY(book->sectionCount() > 3);
+        QCOMPARE(book->sections.join("\n\n"), text);
+    }
+
+    void unreadableFilesSayWhy() {
+        QTemporaryDir dir;
+        Book::Error error;
+        QVERIFY(!Book::load(dir.filePath("nowhere.pdf"), 1, &error));
+        QCOMPARE(error, Book::Error::Missing);
+        QVERIFY(!Book::load(writeText(dir.filePath("blob.bin"), QByteArray("\x01\x00\x02", 3)), 1, &error));
+        QCOMPARE(error, Book::Error::Unsupported);
+        QVERIFY(!Book::load(writeText(dir.filePath("broken.epub"), "PK\x03\x04 not really"), 1, &error));
+        QCOMPARE(error, Book::Error::Unreadable);
+    }
+
+    void providerDrawsOnlyTheOpenBook() {
+        QTemporaryDir dir;
+        Book::Error error;
+        const auto book = Book::load(writePdf(dir.path(), 2), 5, &error);
+        QVERIFY(book);
+        QVERIFY(!PageProvider::image(*book, "page/5/1", QSize(200, 300)).isNull());
+        QVERIFY(!PageProvider::image(*book, "page/5/0/101010/eeeeee", QSize(200, 300)).isNull());
+        QVERIFY(PageProvider::image(*book, "page/4/1", QSize(200, 300)).isNull());
+        QVERIFY(PageProvider::image(*book, "page/5/9", QSize(200, 300)).isNull());
+    }
+
+    void backendRemembersWhereReadingStopped() {
+        QTemporaryDir state, files;
+        const QString path = writeText(files.filePath("notes.md"), "# A\none\n# B\ntwo\n# C\nthree\n");
+        {
+            FakePicker picker;
+            Backend backend(state.path(), &picker);
+            backend.openFile(path);
+            QTRY_VERIFY(backend.isOpen());
+            QCOMPARE(backend.title(), QString("A"));
+            QCOMPARE(backend.sectionCount(), 3);
+            QCOMPARE(backend.textFormat(), int(Qt::MarkdownText));
+            QVERIFY(backend.text().contains("one"));
+            backend.goTo(2, 0.5);
+            QVERIFY(backend.text().contains("three"));
+            QCOMPARE(backend.tocIndex(), 2);
+            QVERIFY(qAbs(backend.progress() - 2.5 / 3) < 1e-9);
+        }
+        FakePicker picker;
+        Backend backend(state.path(), &picker);
+        QCOMPARE(backend.library().size(), 1);
+        const QVariantMap entry = backend.library().first().toMap();
+        QCOMPARE(entry.value("title").toString(), QString("A"));
+        QVERIFY(entry.value("exists").toBool());
+        QVERIFY(qAbs(entry.value("progress").toDouble() - 2.5 / 3) < 1e-9);
+        backend.openRecent(0);
+        QTRY_VERIFY(backend.isOpen());
+        QCOMPARE(backend.section(), 2);
+        QCOMPARE(backend.position(), 0.5);
+
+        backend.close();
+        QVERIFY(!backend.isOpen());
+        backend.forget(0);
+        QVERIFY(backend.library().isEmpty());
+    }
+
+    void backendReportsWhatWentWrong() {
+        QTemporaryDir state, files;
+        FakePicker picker;
+        Backend backend(state.path(), &picker);
+        backend.openFile(files.filePath("gone.epub"));
+        QTRY_VERIFY(!backend.loading());
+        QCOMPARE(backend.error(), QString("gone.epub isn't there any more."));
+        QVERIFY(!backend.isOpen());
+        backend.openFile(writeText(files.filePath("blob.bin"), QByteArray("\x01\x00\x02", 3)));
+        QTRY_VERIFY(backend.error().contains("can't read blob.bin"));
+        backend.dismissError();
+        QVERIFY(backend.error().isEmpty());
+        QVERIFY(backend.library().isEmpty());
+        emit picker.failed("The portal is away.");
+        QCOMPARE(backend.error(), QString("The portal is away."));
+    }
+
+    void themeFallsBack() {
+        QTemporaryDir dir;
+        Theme theme(dir.path());
+        QCOMPARE(theme.accent(), QColor("#FFD60A"));
+        QCOMPARE(theme.accentForeground(), QColor("black"));
+        QVERIFY(!theme.light());
+        QCOMPARE(theme.radius(), 0);
+    }
+
+    void themeReadsThePalette() {
+        QTemporaryDir dir;
+        QVERIFY(QDir(dir.path()).mkpath("theme"));
+        QVERIFY(write(dir.path() + "/theme/colors.toml", "mode = \"light\"\n"
+                                                         "theme_type = \"dark\"\n"
+                                                         "accent = \"#112233\"\n"
+                                                         "bg = #fafafa # paper\n"
+                                                         "foreground = '#202020'\n"
+                                                         "color1 = \"#aa0000\"\n"));
+
+        Theme theme(dir.path());
+        QCOMPARE(theme.accent(), QColor("#112233"));
+        QCOMPARE(theme.accentForeground(), QColor("white"));
+        QCOMPARE(theme.background(), QColor("#fafafa"));
+        QCOMPARE(theme.foreground(), QColor("#202020"));
+        QCOMPARE(theme.colors().value("red").value<QColor>(), QColor("#aa0000"));
+        QVERIFY(theme.light());
+    }
+
+    void themeAsksHyprlandAgainOnlyWhenItReloads() {
+        // The fake Hyprland lives outside the theme directory, whose changes
+        // the Theme also follows.
+        QTemporaryDir dir, hypr;
+        const QString command = fakeHyprctl(hypr.path());
+        QVERIFY(write(hypr.filePath("response.json"), "{\"int\":4}"));
+        QLocalServer events;
+        QVERIFY(events.listen(hypr.filePath("events.sock")));
+
+        // Once on start, and once more when the event socket connects.
+        Theme theme(dir.path(), nullptr, command, events.fullServerName());
+        QTRY_VERIFY(events.hasPendingConnections());
+        QLocalSocket *hyprland = events.nextPendingConnection();
+        QTRY_COMPARE(lines(hypr.filePath("calls")), 2);
+        QTRY_COMPARE(theme.radius(), 4);
+
+        QVERIFY(write(hypr.filePath("response.json"), "{\"int\":10}"));
+        QTest::qWait(300);
+        QCOMPARE(lines(hypr.filePath("calls")), 2);
+        // Events arrive in pieces; only a whole configreloaded line counts.
+        hyprland->write("activewindow>>kitty,~\nconfigrel");
+        hyprland->flush();
+        QTest::qWait(100);
+        QCOMPARE(lines(hypr.filePath("calls")), 2);
+        hyprland->write("oaded>>\n");
+        QTRY_COMPARE(theme.radius(), 10);
+        QCOMPARE(lines(hypr.filePath("calls")), 3);
+    }
+
+    void themeReachesHyprlandOnceItListens() {
+        QTemporaryDir dir, hypr;
+        const QString command = fakeHyprctl(hypr.path());
+        QVERIFY(write(hypr.filePath("response.json"), "{\"int\":4}"));
+        Theme theme(dir.path(), nullptr, command, hypr.filePath("events.sock"));
+        QTRY_COMPARE(theme.radius(), 4);
+
+        QVERIFY(write(hypr.filePath("response.json"), "{\"int\":8}"));
+        QLocalServer events;
+        QVERIFY(events.listen(hypr.filePath("events.sock")));
+        QTRY_VERIFY_WITH_TIMEOUT(events.hasPendingConnections(), 5000);
+        QTRY_COMPARE(theme.radius(), 8);
+    }
+
+    void translatorFallsBackToEnglish() {
+        QTemporaryDir dir;
+        Translator translator(dir.path() + "/language", dir.path());
+        QCOMPARE(translator.language(), QString("en"));
+        QVERIFY(translator.translate("Main", "Save").isNull());
+    }
+
+    void translatorFollowsTheLanguageFile() {
+        QTemporaryDir dir;
+        QVERIFY(write(dir.path() + "/language", "pt-BR\n"));
+        QVERIFY(write(dir.path() + "/pt.json", R"({"Save": "Guardar", "Open": "Abrir"})"));
+        QVERIFY(write(dir.path() + "/pt-BR.json", R"({"Save": "Salvar"})"));
+
+        Translator translator(dir.path() + "/language", dir.path());
+        QCOMPARE(translator.language(), QString("pt-BR"));
+        QCOMPARE(translator.translate("Main", "Save"), QString("Salvar"));
+        QCOMPARE(translator.translate("Main", "Open"), QString("Abrir"));
+        QVERIFY(translator.translate("Main", "Quit").isNull());
+    }
+
+    void translatorSeesAFirstPick() {
+        // Before the first pick there is no ~/.config/omarchy to watch.
+        QTemporaryDir dir;
+        QVERIFY(write(dir.path() + "/da.json", R"({"Save": "Gem"})"));
+        Translator translator(dir.path() + "/omarchy/language", dir.path());
+        QVERIFY(QDir(dir.path()).mkpath("omarchy"));
+        QVERIFY(write(dir.path() + "/omarchy/language", "da\n"));
+        QTRY_COMPARE(translator.translate("Main", "Save"), QString("Gem"));
+    }
+
+    void translatorPicksPluralForms() {
+        QTemporaryDir dir;
+        QVERIFY(write(dir.path() + "/language", "ru\n"));
+        QVERIFY(write(dir.path() + "/en.json", R"({"%n clips": {"one": "%n clip", "other": "%n clips"},
+                                                   "%n files": {"one": "%n file", "other": "%n files"}})"));
+        QVERIFY(write(dir.path() + "/ru.json", R"({"%n clips": {"one": "%n клип", "few": "%n клипа", "many": "%n клипов", "other": "%n клипа"}})"));
+
+        Translator translator(dir.path() + "/language", dir.path());
+        QCOMPARE(translator.translate("Main", "%n clips", nullptr, 21), QString("%n клип"));
+        QCOMPARE(translator.translate("Main", "%n clips", nullptr, 22), QString("%n клипа"));
+        QCOMPARE(translator.translate("Main", "%n clips", nullptr, 25), QString("%n клипов"));
+        // An untranslated counted string falls back to English, with English rules.
+        QCOMPARE(translator.translate("Main", "%n files", nullptr, 21), QString("%n files"));
+    }
+
+    void englishCatalogListsEveryString() {
+        // en.json is what translators work from: every text the sources
+        // translate is in it, as itself or, when counted, as its English
+        // plural forms, and nothing else is.
+        const QString sources = QFileInfo(QFINDTESTDATA("../src/Main.qml")).absolutePath();
+        QStringList problems;
+        const QMap<QString, bool> used = translatables(sources, &problems);
+        const QJsonObject english = readCatalog(sources + "/i18n/en.json");
+        for (auto it = used.begin(); it != used.end(); ++it) {
+            const QJsonValue value = english.value(it.key());
+            if (value.isUndefined())
+                problems << "missing from en.json: " + it.key();
+            else if (it.value() && (value.toObject().keys() != QStringList{"one", "other"}
+                                    || value.toObject().value("other").toString() != it.key()))
+                problems << "counted, so needs its one and other forms: " + it.key();
+            else if (!it.value() && value.toString() != it.key())
+                problems << "should be itself: " + it.key();
+        }
+        for (const QString &key : english.keys())
+            if (!used.contains(key))
+                problems << "in en.json but no source translates it: " + key;
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join('\n')));
+    }
+
+    void catalogsMatchTheEnglishOne() {
+        // A catalog may lack a string (it shows in English meanwhile), but what
+        // it has translates something in en.json, with the same placeholders,
+        // and a counted string has every form its language uses.
+        const QString folder = QFileInfo(QFINDTESTDATA("../src/i18n/en.json")).absolutePath();
+        const QJsonObject english = readCatalog(folder + "/en.json");
+        QStringList problems;
+        for (const QFileInfo &file : QDir(folder).entryInfoList({"*.json"}, QDir::Files)) {
+            const QString code = file.completeBaseName();
+            const QJsonObject catalog = readCatalog(file.filePath());
+            if (catalog.isEmpty())
+                problems << code + ": not a JSON object, or empty";
+            // Some languages reach a form only at a million ("many" in French).
+            QSet<QString> categories{"other", Translator::pluralCategory(code, 1000000)};
+            for (long long n = 0; n <= 1000; ++n)
+                categories << Translator::pluralCategory(code, n);
+            for (auto it = catalog.begin(); it != catalog.end(); ++it) {
+                const QString where = code + ": " + it.key() + ": ";
+                const QJsonValue source = english.value(it.key());
+                if (source.isUndefined()) {
+                    problems << where + "not in en.json";
+                } else if (source.isString()) {
+                    if (!it.value().isString() || it.value().toString().isEmpty())
+                        problems << where + "needs a translation";
+                    else if (placeholders(it.value().toString()) != placeholders(it.key()))
+                        problems << where + "has other placeholders than the English";
+                } else {
+                    const QJsonObject forms = it.value().toObject();
+                    const QStringList wanted = placeholders(source.toObject().value("other").toString());
+                    for (const QString &category : categories)
+                        if (forms.value(category).toString().isEmpty())
+                            problems << where + "needs its " + category + " form";
+                    // A form other than "other" may say its number in words.
+                    for (auto form = forms.begin(); form != forms.end(); ++form) {
+                        const QStringList has = placeholders(form.value().toString());
+                        QStringList needed = wanted;
+                        if (form.key() != "other")
+                            needed.removeIf([&](const QString &p) { return p.endsWith('n') && !has.contains(p); });
+                        if (has != needed)
+                            problems << where + form.key() + " has other placeholders than the English";
+                    }
+                }
+            }
+        }
+        QVERIFY2(problems.isEmpty(), qPrintable(problems.join('\n')));
+    }
+
+    void windowReadsFromTheKeyboard() {
+        // A temp language, theme and library, so the test never depends on the desktop's.
+        QTemporaryDir dir, files;
+        Translator translator(dir.path() + "/language");
+        QCoreApplication::installTranslator(&translator);
+        Theme theme(dir.path());
+        FakePicker picker;
+        Backend backend(dir.path() + "/state", &picker);
+
+        QQmlApplicationEngine engine;
+        QStringList warnings;
+        connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &errors) {
+            for (const auto &error : errors)
+                warnings << error.toString();
+        });
+        engine.rootContext()->setContextProperty("translator", &translator);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.addImageProvider("omaread", backend.createPageProvider());
+        engine.load(QUrl("qrc:/Main.qml"));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+
+        // An empty library says how to start, and O asks for a file.
+        QVERIFY(item(window->contentItem(), "empty")->isVisible());
+        QTest::keyClick(window, Qt::Key_O);
+        QCOMPARE(picker.asked, 1);
+
+        QString markdown = "# Long\n";
+        for (int i = 0; i < 400; ++i)
+            markdown += QString("Line %1 of the first chapter.\n\n").arg(i);
+        markdown += "## Second\nShort.\n## Third\nShorter.\n";
+        backend.openFile(writeText(files.filePath("long.md"), markdown.toUtf8()));
+        QTRY_VERIFY(backend.isOpen());
+        auto *where = item(window->contentItem(), "where");
+        QVERIFY(where);
+        QCOMPARE(where->property("text").toString(), QString("Section 1 of 3  ·  0%"));
+
+        // Space pages down a screen within the chapter, then on to the next.
+        auto *view = item(window->contentItem(), "view");
+        QTest::keyClick(window, Qt::Key_Space);
+        QTRY_VERIFY(view->property("contentY").toDouble() > 100);
+        QVERIFY(backend.position() > 0);
+        QCOMPARE(backend.section(), 0);
+        QTest::keyClick(window, Qt::Key_End);
+        QCOMPARE(backend.section(), 2);
+        QTest::keyClick(window, Qt::Key_BracketLeft);
+        QCOMPARE(backend.section(), 1);
+        QTest::keyClick(window, Qt::Key_Home);
+        QCOMPARE(backend.section(), 0);
+
+        // The contents choose a chapter with Down and Enter.
+        auto *contents = window->findChild<QObject *>("contents");
+        QTest::keyClick(window, Qt::Key_T);
+        QTRY_VERIFY(contents->property("opened").toBool());
+        QTest::keyClick(window, Qt::Key_Down);
+        QTest::keyClick(window, Qt::Key_Down);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(!contents->property("visible").toBool());
+        QCOMPARE(backend.section(), 2);
+
+        const int size = backend.textSize();
+        QTest::keyClick(window, Qt::Key_Plus);
+        QCOMPARE(backend.textSize(), size + 2);
+        QTest::keyClick(window, Qt::Key_0);
+        QCOMPARE(backend.textSize(), 20);
+
+        // A PDF turns its pages with the arrows.
+        backend.openFile(writePdf(files.path(), 3));
+        QTRY_VERIFY(backend.paged());
+        QTRY_COMPARE(item(window->contentItem(), "page")->property("status").toInt(), 1);
+        QTest::keyClick(window, Qt::Key_Right);
+        QCOMPARE(backend.section(), 1);
+        QCOMPARE(where->property("text").toString(), QString("Page 2 of 3  ·  67%"));
+        QTest::keyClick(window, Qt::Key_I);
+        QVERIFY(backend.tintPages());
+        QTest::keyClick(window, Qt::Key_I);
+
+        // Escape goes back to the library, where both books wait.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QVERIFY(!backend.isOpen());
+        auto *shelf = item(window->contentItem(), "shelf");
+        QTRY_COMPARE(shelf->property("count").toInt(), 2);
+        QTest::keyClick(window, Qt::Key_Down);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(backend.isOpen());
+        QCOMPARE(backend.kind(), QString("markdown"));
+        QCOMPARE(backend.section(), 2);
+
+        auto *help = window->findChild<QObject *>("help");
+        QTest::keyClick(window, '?');
+        QTRY_VERIFY(help->property("opened").toBool());
+        // A Material popup animates out: `opened` drops at once, `visible` after.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!help->property("visible").toBool());
+
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+        QCoreApplication::removeTranslator(&translator);
+    }
+};
+
+QTEST_MAIN(OmareadTests)
+#include "omaread_tests.moc"
