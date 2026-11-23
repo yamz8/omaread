@@ -18,6 +18,7 @@
 #include <QtConcurrent>
 
 #include <algorithm>
+#include <cmath>
 
 #include "portalfilepicker.h"
 #include "stylesheet.h"
@@ -81,11 +82,15 @@ void Backend::readState() {
     if (const QString value = state.value("columnWidth").toString(); columnWidths().contains(value))
         m_columnWidth = value;
     m_justify = state.value("justify").toBool();
+    m_wordsPerMinute = std::clamp(state.value("wordsPerMinute").toDouble(defaultWordsPerMinute), 80.0, 900.0);
+    if (const QString value = state.value("progressShows").toString(); progressModes().contains(value))
+        m_progressShows = value;
     for (const QJsonValue &value : state.value("books").toArray()) {
         const QJsonObject book = value.toObject();
         Entry entry{book.value("path").toString(), book.value("title").toString(), book.value("author").toString(),
                     book.value("kind").toString(), book.value("section").toInt(), book.value("sections").toInt(),
-                    std::clamp(book.value("position").toDouble(), 0.0, 1.0), qint64(book.value("opened").toDouble())};
+                    std::clamp(book.value("position").toDouble(), 0.0, 1.0), qint64(book.value("opened").toDouble()),
+                    book.value("progress").toDouble(-1)};
         if (!entry.path.isEmpty())
             m_library << entry;
     }
@@ -98,11 +103,13 @@ void Backend::save() {
         books.append(QJsonObject{{"path", entry.path},         {"title", entry.title},
                                  {"author", entry.author},     {"kind", entry.kind},
                                  {"section", entry.section},   {"sections", entry.sections},
-                                 {"position", entry.position}, {"opened", double(entry.opened)}});
+                                 {"position", entry.position}, {"opened", double(entry.opened)},
+                                 {"progress", entry.progress}});
     const QJsonObject state{
         {"textScale", m_textScale}, {"tintPages", m_tintPages}, {"spread", m_spread}, {"transition", m_transition},
         {"typeface", m_typeface},   {"lineSpacing", m_lineSpacing}, {"columnWidth", m_columnWidth},
-        {"justify", m_justify},     {"books", books}};
+        {"justify", m_justify},     {"wordsPerMinute", m_wordsPerMinute},
+        {"progressShows", m_progressShows}, {"books", books}};
     QDir().mkpath(QFileInfo(m_stateFile).path());
     // Atomic, so a crash mid-write never loses the whole library.
     QSaveFile file(m_stateFile);
@@ -121,7 +128,8 @@ QVariantList Backend::library() const {
     QVariantList list;
     for (const Entry &entry : m_library) {
         const double progress =
-            entry.sections <= 0 ? 0
+            entry.progress >= 0 ? entry.progress
+            : entry.sections <= 0 ? 0
             : entry.kind == "pdf" || entry.kind == "comic"
                 ? double(entry.section + 1) / entry.sections
                 : (entry.section + entry.position) / entry.sections;
@@ -226,7 +234,71 @@ double Backend::progress() const {
         const int last = m_spread ? std::min(m_section + 2, count) : m_section + 1;
         return std::clamp(double(last) / count, 0.0, 1.0);
     }
-    return std::clamp((m_section + m_position) / count, 0.0, 1.0);
+    // By words, and only of the book's text: a title page weighs nothing and
+    // a long chapter more than a short one.
+    const qint64 total = m_book->totalWords();
+    if (total <= 0)
+        return std::clamp((m_section + m_position) / count, 0.0, 1.0);
+    return std::clamp(double(m_book->wordsBefore(m_section, m_position)) / total, 0.0, 1.0);
+}
+
+QString Backend::chapterLabel() const {
+    const int index = tocIndex();
+    if (!m_book || index < 0)
+        return {};
+    // The entry and the ones it sits under, nearest first.
+    QStringList chain;
+    int depth = m_book->toc[index].depth + 1;
+    for (int i = index; i >= 0 && depth > 0; --i) {
+        const TocEntry &entry = m_book->toc[i];
+        if (entry.depth >= depth)
+            continue;
+        depth = entry.depth;
+        if (entry.title.compare(m_book->title, Qt::CaseInsensitive) != 0)
+            chain.prepend(entry.title);
+    }
+    while (chain.size() > 2)
+        chain.removeFirst();
+    return chain.join(QStringLiteral("  ·  "));
+}
+
+int Backend::minutesLeftInChapter() const {
+    if (!m_book || m_book->words.isEmpty() || m_section >= m_book->words.size())
+        return -1;
+    const double left = m_book->words[m_section] * (1 - m_position);
+    return int(std::ceil(left / m_wordsPerMinute));
+}
+
+int Backend::minutesLeftInBook() const {
+    if (!m_book || m_book->words.isEmpty() || m_book->totalWords() <= 0)
+        return -1;
+    const double left = double(m_book->totalWords() - m_book->wordsBefore(m_section, m_position));
+    return int(std::ceil(std::max(0.0, left) / m_wordsPerMinute));
+}
+
+void Backend::noteReading(double seconds, double fraction) {
+    if (!m_book || m_book->words.isEmpty() || m_section >= m_book->words.size() || seconds <= 0)
+        return;
+    const double words = m_book->words[m_section] * std::clamp(fraction, 0.0, 1.0);
+    // A screen too short to have been read, or one left open while away,
+    // says nothing about the reader's pace.
+    if (words < 40 || seconds < 4 || seconds > 300)
+        return;
+    const double pace = words / seconds * 60;
+    if (pace < 60 || pace > 1200)
+        return;
+    // Moves a tenth of the way each screen, so one slow page doesn't swing it.
+    m_wordsPerMinute = std::clamp(m_wordsPerMinute * 0.9 + pace * 0.1, 80.0, 900.0);
+    emit positionChanged();
+    scheduleSave();
+}
+
+void Backend::setProgressShows(const QString &shows) {
+    if (shows == m_progressShows || !progressModes().contains(shows))
+        return;
+    m_progressShows = shows;
+    emit settingsChanged();
+    scheduleSave();
 }
 
 void Backend::setPosition(double position) {
@@ -345,6 +417,7 @@ void Backend::updateText() {
             text = Styling::sized(Book::withInk(Book::fitImages(text, m_readingWidth), m_ink), m_readingSize);
     }
     if (text != m_text) {
+        emit textAboutToChange();
         m_text = text;
         emit textChanged();
     }
@@ -434,7 +507,7 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
         m_library.erase(it);
     }
     m_library.prepend(Entry{m_book->path, m_book->title, m_book->author, m_book->kindName(), m_section,
-                            m_book->sectionCount(), m_position, QDateTime::currentMSecsSinceEpoch()});
+                            m_book->sectionCount(), m_position, QDateTime::currentMSecsSinceEpoch(), progress()});
     while (m_library.size() > maxLibrary)
         m_library.removeLast();
     scheduleSave();
@@ -493,9 +566,12 @@ void Backend::goTo(int section, double position) {
     m_position = position;
     setTarget(-1);
     if (moved) {
-        updateText();
+        // The window hears of the new section before its text arrives, so the
+        // old chapter's scroll, as the new text is laid out, isn't taken for
+        // the reader's place in the new one.
         updateLinks();
         emit sectionChanged();
+        updateText();
         emit hitChanged();
     }
     emit positionChanged();
@@ -538,6 +614,7 @@ void Backend::remember() {
         return;
     m_library.first().section = m_section;
     m_library.first().position = m_position;
+    m_library.first().progress = progress();
     scheduleSave();
 }
 

@@ -75,6 +75,18 @@ class Backend : public QObject {
     // How a page turns: one of transitions, "slide" by default.
     Q_PROPERTY(QString transition READ transition WRITE setTransition NOTIFY settingsChanged)
     Q_PROPERTY(QStringList transitions READ transitions CONSTANT)
+    // Where the reader is, as the book names it: the part and the chapter,
+    // "Part II · V", leaving out an entry that only repeats the book's title.
+    Q_PROPERTY(QString chapterLabel READ chapterLabel NOTIFY sectionChanged)
+    // Minutes left at the reader's pace, in this section and in the whole
+    // book's text; -1 when the book has no words to count, as a PDF or comic.
+    Q_PROPERTY(int minutesLeftInChapter READ minutesLeftInChapter NOTIFY positionChanged)
+    Q_PROPERTY(int minutesLeftInBook READ minutesLeftInBook NOTIFY positionChanged)
+    // The reader's pace, learned from how long a screen takes to read.
+    Q_PROPERTY(double wordsPerMinute READ wordsPerMinute NOTIFY positionChanged)
+    // What the footer's right side shows: "chapter" or "book" time left,
+    // "page", "percent", or "none". P steps through them.
+    Q_PROPERTY(QString progressShows READ progressShows WRITE setProgressShows NOTIFY settingsChanged)
     // How a flowing book's text is set, for every book: "serif" or "sans";
     // "compact", "normal" or "relaxed" lines; a "narrow", "medium" or "wide"
     // column; and ragged or justified lines.
@@ -144,6 +156,17 @@ public:
     QString transition() const { return m_transition; }
     void setTransition(const QString &transition);
     static QStringList transitions() { return {"slide", "flip", "cover", "fade", "none"}; }
+    QString chapterLabel() const;
+    int minutesLeftInChapter() const;
+    int minutesLeftInBook() const;
+    double wordsPerMinute() const { return m_wordsPerMinute; }
+    // A screen's worth of reading: how long it took, and how much of the
+    // section it held. Pauses and skims are left out.
+    Q_INVOKABLE void noteReading(double seconds, double fraction);
+    QString progressShows() const { return m_progressShows; }
+    void setProgressShows(const QString &shows);
+    static QStringList progressModes() { return {"chapter", "book", "page", "percent", "none"}; }
+    static constexpr double defaultWordsPerMinute = 250;
     QString typeface() const { return m_typeface; }
     void setTypeface(const QString &typeface);
     QString lineSpacing() const { return m_lineSpacing; }
@@ -208,6 +231,9 @@ signals:
     void sectionChanged();
     void textChanged();
     void positionChanged();
+    // Just before new text: the window stops taking its scroll for the
+    // reader's place until the new text is laid out and the place restored.
+    void textAboutToChange();
     void targetChanged();
     void searchChanged();
     void hitChanged();
@@ -221,6 +247,9 @@ private:
         int section = 0, sections = 0;
         double position = 0;
         qint64 opened = 0;
+        // How much of the book's text has been read, as the open book counts
+        // it; -1 for an entry saved before it was kept.
+        double progress = -1;
     };
     struct Loaded {
         std::shared_ptr<Book> book;
@@ -268,6 +297,8 @@ private:
     double m_textScale = defaultTextScale;
     bool m_tintPages = false;
     // A book reads best in a serif, as printed books are set.
+    double m_wordsPerMinute = defaultWordsPerMinute;
+    QString m_progressShows = "chapter";
     QString m_typeface = "serif";
     QString m_lineSpacing = "normal";
     QString m_columnWidth = "medium";

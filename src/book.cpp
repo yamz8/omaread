@@ -262,7 +262,41 @@ std::shared_ptr<Book> Book::load(const QString &path, int id, Error *error, cons
         *error = Error::Empty;
         return nullptr;
     }
+    if (!book->paged()) {
+        static const QRegularExpression tag("<[^>]*>");
+        static const QRegularExpression word("[\\w\\p{L}][\\w\\p{L}'’-]*");
+        for (const QString &section : std::as_const(book->sections)) {
+            const QString text = book->kind == Kind::Epub ? QString(section).replace(tag, " ") : section;
+            int count = 0;
+            for (auto it = word.globalMatch(text); it.hasNext(); it.next())
+                ++count;
+            book->words << count;
+        }
+        while (book->reading.size() < book->words.size())
+            book->reading << true;
+        // A book that is all title pages still has something to read.
+        if (!book->reading.contains(true))
+            book->reading.fill(true);
+    }
     return book;
+}
+
+qint64 Book::wordsBefore(int section, double position) const {
+    qint64 before = 0;
+    for (int i = 0; i < std::min<int>(section, int(words.size())); ++i)
+        if (reading.value(i, true))
+            before += words[i];
+    if (section >= 0 && section < words.size() && reading.value(section, true))
+        before += qint64(std::clamp(position, 0.0, 1.0) * words[section]);
+    return before;
+}
+
+qint64 Book::totalWords() const {
+    qint64 total = 0;
+    for (int i = 0; i < words.size(); ++i)
+        if (reading.value(i, true))
+            total += words[i];
+    return total;
 }
 
 namespace {
@@ -441,6 +475,21 @@ bool Book::loadEpub(Error *error) {
         QList<const Styling::Sheet *> cascade;
         for (const auto &s : std::as_const(held))
             cascade << s.get();
+        // Title pages, the imprint, the contents and the notes are there to
+        // look at or look up, not to read through, as EPUB 3 marks them.
+        {
+            static const QRegularExpression marked("<(?:body|section)\\b[^>]*\\bepub:type\\s*=\\s*\"([^\"]*)\"");
+            static const QStringList aside = {"titlepage", "halftitlepage", "imprint", "copyright-page", "colophon",
+                                              "uncopyright", "toc", "landmarks", "loi", "lot", "endnotes", "footnotes",
+                                              "rearnotes", "cover", "index"};
+            bool read = true;
+            int checked = 0;
+            for (auto it = marked.globalMatch(QString::fromUtf8(xhtml)); it.hasNext() && checked < 2; ++checked)
+                for (const QString &kind : it.next().captured(1).split(' ', Qt::SkipEmptyParts))
+                    if (aside.contains(kind))
+                        read = false;
+            reading << read;
+        }
         QHash<QString, QString> chapterNotes;
         QString html = Styling::apply(xhtml, cascade, &chapterNotes);
         const bool styled = !html.isNull();

@@ -6,6 +6,8 @@ A book reader for [Omarchy](https://omarchy.org). EPUBs, comics and PDF books, r
 
 Omaread is for reading books from start to finish. EPUBs flow in the theme's colors at the desktop's text size, comics (CBZ, CBR, CB7, CBT) turn a page at a time or two side by side, and PDF and comic pages can be tinted to match the theme. It follows the Omarchy theme and language as they change. Markdown and plain text open too. Filling in forms, annotating and printing PDFs are left to a document viewer.
 
+The footer names the part and chapter you're in, and tells the time left in the chapter at your own reading pace, which it learns as you read; `P` switches it to the time left in the book, the page, or the percent read. Progress counts only the book's text, by its words, so title pages, the imprint and the endnotes don't move it.
+
 The library remembers every book you've opened and where you stopped reading, so the next time a book opens, it opens at that place. The library lives in `~/.local/state/omaread/library.json`. Omaread never changes the files it reads.
 
 Open a book from the library, with `O`, by dropping it on the window, or from the command line:
@@ -46,6 +48,7 @@ omaread skill install               # teach coding agents to use these commands
 | `W` | Fit pages to the width or the window |
 | `D` | One page or two side by side |
 | `I` | Color pages like the theme |
+| `P` | Show time left in the chapter or book, the page, or the percent read |
 | `S` | Reading settings: serif or sans, text size, line spacing, column width, ragged or justified |
 | `A` | Change how pages turn |
 | `F` | Full screen |

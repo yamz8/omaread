@@ -84,7 +84,17 @@ ApplicationWindow {
     // One screen on; at the end of a section, the start of the next. A flowing
     // book's next screen starts with the line the last one cut off, so every
     // line is read once and whole.
+    // When the screen on view began to be read, to learn the reader's pace.
+    // Leaving the window, or moving anywhere but on, starts the count again.
+    property double screenStarted: 0
+    onActiveChanged: screenStarted = active ? Date.now() : 0
+    function noteScreenRead() {
+        if (!backend.paged && screenStarted > 0 && active && view.contentHeight > 0)
+            backend.noteReading((Date.now() - screenStarted) / 1000, Math.min(1, view.height / view.contentHeight))
+        screenStarted = Date.now()
+    }
     function forward() {
+        noteScreenRead()
         if (view.contentY + view.height >= view.contentHeight - 2) {
             if (backend.section + step < backend.sectionCount)
                 jump(backend.section + step, 0)
@@ -95,6 +105,7 @@ ApplicationWindow {
         }
     }
     function backward() {
+        screenStarted = Date.now()
         if (view.contentY <= 1) {
             if (backend.section > 0)
                 jump(Math.max(0, backend.section - step), 1)
@@ -109,6 +120,42 @@ ApplicationWindow {
     function scroll(dy) {
         view.contentY = Math.max(0, Math.min(view.contentY + dy, view.contentHeight - view.height))
     }
+    // What the footer's right side shows. A PDF or comic has no words to time,
+    // so it shows pages or the percent read.
+    readonly property var progressModes: backend.paged ? ["page", "percent", "none"]
+                                                       : ["chapter", "book", "page", "percent", "none"]
+    readonly property string progressMode: progressModes.indexOf(backend.progressShows) >= 0 ? backend.progressShows
+                                         : backend.paged ? "page" : "chapter"
+    function progressName(mode) {
+        return mode === "chapter" ? qsTr("Time left in chapter") : mode === "book" ? qsTr("Time left in book")
+             : mode === "page" ? qsTr("Page number") : mode === "percent" ? qsTr("Percent read") : qsTr("Progress hidden")
+    }
+    function nextProgress() {
+        const next = progressModes[(progressModes.indexOf(progressMode) + 1) % progressModes.length]
+        backend.progressShows = next
+        say(progressName(next))
+    }
+    function timeLeft(minutes, inBook) {
+        if (minutes <= 1)
+            return inBook ? qsTr("Less than a minute left in book") : qsTr("Less than a minute left in chapter")
+        if (inBook && minutes >= 60)
+            return qsTr("%1 h %2 min left in book").arg(number(Math.floor(minutes / 60))).arg(number(minutes % 60))
+        return inBook ? qsTr("%Ln min left in book", "", minutes) : qsTr("%Ln min left in chapter", "", minutes)
+    }
+    function whereText() {
+        switch (progressMode) {
+        case "chapter": return backend.minutesLeftInChapter < 0 ? percent(backend.progress) : timeLeft(backend.minutesLeftInChapter, false)
+        case "book": return backend.minutesLeftInBook < 0 ? percent(backend.progress) : timeLeft(backend.minutesLeftInBook, true)
+        case "percent": return percent(backend.progress)
+        case "none": return ""
+        }
+        if (!backend.paged)
+            return qsTr("Section %1 of %2").arg(number(backend.section + 1)).arg(number(backend.sectionCount))
+        if (shownPages.length > 1)
+            return qsTr("Pages %1–%2 of %3").arg(number(backend.section + 1)).arg(number(backend.section + 2)).arg(number(backend.sectionCount))
+        return qsTr("Page %1 of %2").arg(number(backend.section + 1)).arg(number(backend.sectionCount))
+    }
+
     // A note opens in place; any other link in the book is followed, and a
     // link out of it opens in the browser.
     function openLink(link) {
@@ -298,8 +345,14 @@ ApplicationWindow {
 
     Connections {
         target: backend
-        function onBookChanged() { win.zoom = 1; win.finding = false; Qt.callLater(win.restore) }
-        function onSectionChanged() { win.clearSelections(); Qt.callLater(win.restore) }
+        // Until the new text is laid out and the view moved to its place, the
+        // view still scrolled for the old one isn't the reader moving: taken
+        // for it, a jump to a chapter's start landed as far down as the place left.
+        function onBookChanged() { win.restoring = true; win.zoom = 1; win.finding = false; win.screenStarted = Date.now(); Qt.callLater(win.restore) }
+        function onSectionChanged() { win.restoring = true; win.clearSelections(); Qt.callLater(win.restore) }
+        // New text, for a new section or a new text size: its layout moves the
+        // view, which mustn't move the reader's place.
+        function onTextAboutToChange() { win.restoring = true; Qt.callLater(win.restore) }
         function onTargetChanged() { Qt.callLater(win.showTarget) }
         function onHitChanged() { Qt.callLater(win.showHit) }
         function onPasswordChanged() { if (backend.passwordFor !== "") passwordDialog.open() }
@@ -336,6 +389,7 @@ ApplicationWindow {
         enabled: backend.open && !backend.paged && (!win.busy || settings.visible)
         onActivated: settings.visible ? settings.close() : settings.open()
     }
+    Shortcut { sequence: "P"; enabled: win.reading; onActivated: win.nextProgress() }
     Shortcut { sequence: "A"; enabled: win.reading; onActivated: win.nextTransition() }
 
     Shortcut { sequence: "Down"; enabled: win.browsing; onActivated: shelf.incrementCurrentIndex() }
@@ -836,9 +890,8 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.preferredWidth: 2
                         horizontalAlignment: Text.AlignHCenter
-                        // Not the book's title a second time, as on a title page.
-                        text: backend.tocIndex >= 0 && backend.toc[backend.tocIndex].title !== backend.title
-                              ? backend.toc[backend.tocIndex].title : ""
+                        objectName: "chapter"
+                        text: backend.chapterLabel
                         color: win.muted
                         elide: Text.ElideRight
                     }
@@ -847,14 +900,15 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.preferredWidth: 2
                         horizontalAlignment: Text.AlignRight
-                        text: (!backend.paged
-                               ? qsTr("Section %1 of %2").arg(win.number(backend.section + 1)).arg(win.number(backend.sectionCount))
-                               : win.shownPages.length > 1
-                               ? qsTr("Pages %1–%2 of %3").arg(win.number(backend.section + 1)).arg(win.number(backend.section + 2)).arg(win.number(backend.sectionCount))
-                               : qsTr("Page %1 of %2").arg(win.number(backend.section + 1)).arg(win.number(backend.sectionCount)))
-                              + "  ·  " + win.percent(backend.progress)
+                        text: win.whereText()
                         color: win.muted
                         elide: Text.ElideLeft
+                        // A click steps through what it shows, as P does.
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: win.nextProgress()
+                        }
                     }
                 }
             }
@@ -1393,6 +1447,7 @@ ApplicationWindow {
                     { keys: "W", action: qsTr("Fit pages to the width or the window") },
                     { keys: "D", action: qsTr("One page or two side by side") },
                     { keys: "I", action: qsTr("Color pages like the theme") },
+                    { keys: "P", action: qsTr("Show time left, the page, or the percent read") },
                     { keys: "S", action: qsTr("Reading settings: typeface, spacing, column") },
                     { keys: "A", action: qsTr("Change how pages turn") },
                     { keys: "F", action: qsTr("Full screen") },

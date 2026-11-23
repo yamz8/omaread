@@ -736,6 +736,61 @@ private slots:
         QCOMPARE(again.transition(), QString("cover"));
     }
 
+    void backendCountsProgressByWords() {
+        QTemporaryDir state, files;
+        FakePicker picker;
+        // A title page with no reading in it, a long chapter and a short one.
+        QString markdown = "# Title\n\n## Long\n";
+        for (int i = 0; i < 100; ++i)
+            markdown += "one two three four five six seven eight nine ten\n\n";
+        markdown += "## Short\nOne two three four five six seven eight nine ten.\n";
+        {
+            Backend backend(state.path(), &picker);
+            backend.openFile(writeText(files.filePath("words.md"), markdown.toUtf8()));
+            QTRY_VERIFY(backend.isOpen());
+            QCOMPARE(backend.sectionCount(), 2);
+            // A thousand words and more at 250 a minute.
+            QCOMPARE(backend.wordsPerMinute(), 250.0);
+            QCOMPARE(backend.minutesLeftInChapter(), 5);
+            QCOMPARE(backend.minutesLeftInBook(), 5);
+            // Halfway through the long chapter is nearly halfway through the
+            // book: the short chapter weighs little, not half.
+            backend.setPosition(0.5);
+            QVERIFY(backend.progress() > 0.48 && backend.progress() < 0.5);
+            QCOMPARE(backend.minutesLeftInChapter(), 3);
+            // The reader's pace is learned a little at a time, and screens too
+            // short or too long to say anything are left out.
+            backend.noteReading(1, 0.2);
+            backend.noteReading(1000, 0.2);
+            QCOMPARE(backend.wordsPerMinute(), 250.0);
+            backend.noteReading(30, 0.2);    // about 200 words in 30 seconds: 400 a minute
+            QVERIFY(backend.wordsPerMinute() > 260 && backend.wordsPerMinute() < 270);
+            backend.setProgressShows("book");
+            backend.setProgressShows("sideways");
+            QCOMPARE(backend.progressShows(), QString("book"));
+            backend.save();
+        }
+        // The pace, the choice, and the progress the library shows are kept.
+        Backend again(state.path(), &picker);
+        QVERIFY(again.wordsPerMinute() > 260);
+        QCOMPARE(again.progressShows(), QString("book"));
+        const QVariantMap entry = again.library().value(0).toMap();
+        QVERIFY(entry.value("progress").toDouble() > 0.48 && entry.value("progress").toDouble() < 0.5);
+    }
+
+    void backendNamesThePartAndChapter() {
+        QTemporaryDir state, files;
+        FakePicker picker;
+        Backend backend(state.path(), &picker);
+        backend.openFile(writeText(files.filePath("parts.md"),
+                                   "# Novel\nIntro.\n## Part One\nText.\n## Part Two\nMore.\n"));
+        QTRY_VERIFY(backend.isOpen());
+        // The book's own title is never repeated as the chapter's.
+        QCOMPARE(backend.chapterLabel(), QString());
+        backend.goTo(2);
+        QCOMPARE(backend.chapterLabel(), QString("Part Two"));
+    }
+
     void backendRemembersHowTextIsSet() {
         QTemporaryDir state;
         FakePicker picker;
@@ -1169,6 +1224,46 @@ private slots:
             "<a href=\"omaread:1#note-1\" id=\"noteref-1\" style=\"text-decoration: none; vertical-align: super\">1</a>"));
     }
 
+    void windowJumpsToAChaptersStart() {
+        QTemporaryDir dir, files;
+        Translator translator(dir.path() + "/language");
+        Theme theme(dir.path());
+        FakePicker picker;
+        Backend backend(dir.path() + "/state", &picker);
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("translator", &translator);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.addImageProvider("omaread", backend.createPageProvider());
+        engine.load(QUrl("qrc:/Main.qml"));
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QTRY_VERIFY(window->property("settled").toBool());
+        backend.setTransition("none");
+
+        QString markdown;
+        for (const QString chapter : {"One", "Two"}) {
+            markdown += "## " + chapter + "\n";
+            for (int i = 0; i < 300; ++i)
+                markdown += QString("Line %1 of chapter %2.\n\n").arg(i).arg(chapter);
+        }
+        backend.openFile(writeText(files.filePath("two.md"), markdown.toUtf8()));
+        QTRY_VERIFY(backend.isOpen());
+        auto *view = item(window->contentItem(), "view");
+        // Halfway down the first chapter, the next one opens at its start.
+        backend.setPosition(0.5);
+        QMetaObject::invokeMethod(window, "restore");
+        QTRY_VERIFY(view->property("contentY").toDouble() > 1000);
+        QTest::keyClick(window, Qt::Key_BracketRight);
+        QCOMPARE(backend.section(), 1);
+        QTest::qWait(300);
+        QCOMPARE(backend.position(), 0.0);
+        QCOMPARE(view->property("contentY").toDouble(), 0.0);
+    }
+
     void windowShowsANoteInPlace() {
         QTemporaryDir dir, files;
         Translator translator(dir.path() + "/language");
@@ -1303,7 +1398,16 @@ private slots:
         QTRY_VERIFY(backend.isOpen());
         auto *where = item(window->contentItem(), "where");
         QVERIFY(where);
-        QCOMPARE(where->property("text").toString(), QString("Section 1 of 3  ·  0%"));
+        // The footer tells the time left in the chapter at 250 words a minute,
+        // and P steps through the rest, ending back where it started.
+        QCOMPARE(where->property("text").toString(), QString("10 min left in chapter"));
+        // The chapter isn't named when it only repeats the book's title.
+        QCOMPARE(item(window->contentItem(), "chapter")->property("text").toString(), QString());
+        const QStringList shown = {"10 min left in book", "Section 1 of 3", "0%", "", "10 min left in chapter"};
+        for (const QString &text : shown) {
+            QTest::keyClick(window, Qt::Key_P);
+            QCOMPARE(where->property("text").toString(), text);
+        }
 
         // Space pages down a screen within the chapter, then on to the next.
         auto *view = item(window->contentItem(), "view");
@@ -1313,6 +1417,7 @@ private slots:
         QCOMPARE(backend.section(), 0);
         QTest::keyClick(window, Qt::Key_End);
         QCOMPARE(backend.section(), 2);
+        QCOMPARE(item(window->contentItem(), "chapter")->property("text").toString(), QString("Third"));
         QTest::keyClick(window, Qt::Key_BracketLeft);
         QCOMPARE(backend.section(), 1);
         QTest::keyClick(window, Qt::Key_Home);
@@ -1394,7 +1499,8 @@ private slots:
         QTRY_COMPARE(item(window->contentItem(), "pageImage")->property("status").toInt(), 1);
         QTest::keyClick(window, Qt::Key_Right);
         QCOMPARE(backend.section(), 1);
-        QCOMPARE(where->property("text").toString(), QString("Page 2 of 3  ·  67%"));
+        // A PDF has no words to time, so it shows its pages.
+        QCOMPARE(where->property("text").toString(), QString("Page 2 of 3"));
         QTest::keyClick(window, Qt::Key_I);
         QVERIFY(backend.tintPages());
         QTest::keyClick(window, Qt::Key_I);
@@ -1402,7 +1508,7 @@ private slots:
         QTest::keyClick(window, Qt::Key_D);
         QVERIFY(backend.spread());
         QTRY_COMPARE(item(window->contentItem(), "spread")->childItems().size(), 3);
-        QCOMPARE(where->property("text").toString(), QString("Pages 2–3 of 3  ·  100%"));
+        QCOMPARE(where->property("text").toString(), QString("Pages 2–3 of 3"));
         QTest::keyClick(window, Qt::Key_Left);
         QCOMPARE(backend.section(), 0);
         QTest::keyClick(window, Qt::Key_D);

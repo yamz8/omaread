@@ -71,6 +71,14 @@ public:
     // An EPUB's footnotes and endnotes, as HTML like a section's, by
     // "<section>#<id>": where a link to one points.
     QHash<QString, QString> notes;
+    // How many words each flowing section holds, and whether it is the book's
+    // text to read, rather than a title page, the imprint, the contents or
+    // the endnotes. Progress and time left count only what is read.
+    QList<int> words;
+    QList<bool> reading;
+    // The words read once the given place is reached, and all there are.
+    qint64 wordsBefore(int section, double position) const;
+    qint64 totalWords() const;
     // Given by the backend, so an image request for a book that has since been
     // replaced is told apart from one for this book.
     int id = 0;
