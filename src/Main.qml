@@ -1672,7 +1672,12 @@ ApplicationWindow {
         readonly property int pages: counted ? backend.pageCount : backend.sectionCount
         readonly property int here: {
             void view.contentY
-            return counted ? backend.pageAt(backend.section, view.contentY) : backend.section + 1
+            return hereNow()
+        }
+        // Worked out on the spot: in a handler of the count's change, the
+        // binding above may not have caught up yet.
+        function hereNow() {
+            return !backend.paged && backend.pageCount > 0 ? backend.pageAt(backend.section, view.contentY) : backend.section + 1
         }
         readonly property var preview: {
             void backend.pageCount
@@ -1680,7 +1685,10 @@ ApplicationWindow {
         }
         // Opened while the pages were being counted, it moved by sections;
         // once they're counted, it looks at the page being read.
-        onCountedChanged: if (visible) page = here
+        Connections {
+            target: backend
+            function onPagesChanged() { if (skim.visible) skim.page = skim.hereNow() }
+        }
         // The pages chapters start on, for Shift with an arrow and the track's marks.
         readonly property var chapterStarts: {
             const starts = backend.toc.map(e => counted ? backend.pageAt(e.section, 0) : e.section + 1)
@@ -1700,7 +1708,7 @@ ApplicationWindow {
             radius: theme.radius
         }
         onAboutToShow: {
-            page = here
+            page = hereNow()
             pageNumber.text = ""
             pageNumber.forceActiveFocus()
         }
