@@ -26,9 +26,15 @@ ApplicationWindow {
     readonly property int uiSize: font.pixelSize
     // The reading text, as a multiple of the desktop's text size.
     readonly property int readingSize: Math.round(theme.textSize * backend.textScale)
+    // The reading settings, as the text view uses them.
+    readonly property real lineHeight: backend.lineSpacing === "compact" ? 1.2 : backend.lineSpacing === "relaxed" ? 1.65 : 1.4
+    readonly property int columnChars: backend.columnWidth === "narrow" ? 28 : backend.columnWidth === "wide" ? 42 : 34
 
     // Single-key shortcuts rest while a popup or the search field has the keyboard.
     readonly property bool busy: help.opened || contents.opened || goDialog.opened || passwordDialog.opened
+                                 // From the moment it appears, not once its opening animation ends,
+                                 // or a key pressed right after S turns the page behind it.
+                                 || settings.visible
                                  || findField.activeFocus
     readonly property bool reading: backend.open && !busy && settled
     readonly property bool browsing: !backend.open && !busy && settled
@@ -316,6 +322,11 @@ ApplicationWindow {
     Shortcut { sequence: "W"; enabled: win.reading && backend.paged; onActivated: { win.fitWidth = !win.fitWidth; win.zoom = 1; Qt.callLater(win.restore) } }
     Shortcut { sequence: "D"; enabled: win.reading && backend.paged; onActivated: backend.spread = !backend.spread }
     Shortcut { sequence: "I"; enabled: win.reading && backend.paged; onActivated: backend.tintPages = !backend.tintPages }
+    Shortcut {
+        sequence: "S"
+        enabled: backend.open && !backend.paged && (!win.busy || settings.visible)
+        onActivated: settings.visible ? settings.close() : settings.open()
+    }
     Shortcut { sequence: "A"; enabled: win.reading; onActivated: win.nextTransition() }
 
     Shortcut { sequence: "Down"; enabled: win.browsing; onActivated: shelf.incrementCurrentIndex() }
@@ -619,7 +630,7 @@ ApplicationWindow {
                                 visible: !backend.paged
                                 x: (view.width - width) / 2
                                 y: margin
-                                width: Math.max(200, Math.min(view.width - 2 * 32, win.readingSize * 34))
+                                width: Math.max(200, Math.min(view.width - 2 * 32, win.readingSize * win.columnChars))
                                 text: backend.text
                                 textFormat: backend.textFormat
                                 baseUrl: backend.baseUrl
@@ -630,15 +641,23 @@ ApplicationWindow {
                                 activeFocusOnPress: false
                                 wrapMode: TextEdit.Wrap
                                 font.pixelSize: win.readingSize
+                                // Noto Serif comes with Omarchy; elsewhere fontconfig finds the
+                                // nearest. The sans is the desktop's own.
+                                font.family: backend.typeface === "serif" ? "Noto Serif" : win.font.family
                                 color: theme.foreground
                                 selectionColor: theme.accent
                                 selectedTextColor: theme.accentForeground
                                 readonly property real paragraphGap: Math.round(win.readingSize * 0.75)
+                                function typeset() { backend.typeset(textDocument, win.lineHeight, paragraphGap, backend.justify) }
                                 onTextChanged: {
                                     backend.loadImages(textDocument)
-                                    backend.spaceLines(textDocument, 1.35, paragraphGap)
+                                    typeset()
                                 }
-                                onParagraphGapChanged: backend.spaceLines(textDocument, 1.35, paragraphGap)
+                                onParagraphGapChanged: typeset()
+                                Connections {
+                                    target: backend
+                                    function onSettingsChanged() { prose.typeset() }
+                                }
                                 onLinkActivated: link => { if (!backend.followLink(link)) Qt.openUrlExternally(link) }
 
                                 HoverHandler {
@@ -889,6 +908,153 @@ ApplicationWindow {
         }
     }
 
+    // How a flowing book's text is set. It sits at the bottom without dimming
+    // the page, so each change shows on the text behind it. Up and Down choose
+    // a setting, Left and Right change it, and S or Escape close it.
+    Popup {
+        id: settings
+        objectName: "settings"
+        x: Math.round((win.width - width) / 2)
+        // Over the footer, so no half-line peeks out beneath it.
+        y: win.height - height - 8
+        width: Math.min(620, win.width - 32)
+        modal: false
+        dim: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: 16
+        background: Rectangle {
+            color: theme.background
+            border.color: theme.colors.selection
+            radius: theme.radius
+        }
+
+        property int row: 0
+        readonly property var rows: [
+            { key: "typeface", label: qsTr("Typeface"),
+              options: [{ value: "serif", label: qsTr("Serif") }, { value: "sans", label: qsTr("Sans") }] },
+            { key: "size", label: qsTr("Text size"),
+              options: [{ value: -1, label: "A−" }, { value: 0, label: win.percent(backend.textScale / 1.5) }, { value: 1, label: "A+" }] },
+            { key: "lineSpacing", label: qsTr("Line spacing"),
+              options: [{ value: "compact", label: qsTr("Compact") }, { value: "normal", label: qsTr("Normal") },
+                        { value: "relaxed", label: qsTr("Relaxed") }] },
+            { key: "columnWidth", label: qsTr("Column"),
+              options: [{ value: "narrow", label: qsTr("Narrow") }, { value: "medium", label: qsTr("Medium") },
+                        { value: "wide", label: qsTr("Wide") }] },
+            { key: "justify", label: qsTr("Alignment"),
+              options: [{ value: false, label: qsTr("Ragged") }, { value: true, label: qsTr("Justified") }] }
+        ]
+        function current(key) { return key === "size" ? 0 : backend[key] }
+        function choose(key, value) {
+            if (key === "size")
+                win.resize(value)
+            else
+                backend[key] = value
+        }
+        // Left and Right step through a row's choices; text size grows and shrinks.
+        function step(by) {
+            const r = rows[row]
+            if (r.key === "size")
+                return choose("size", by)
+            const at = r.options.findIndex(o => o.value === current(r.key))
+            const next = Math.max(0, Math.min(r.options.length - 1, at + by))
+            choose(r.key, r.options[next].value)
+        }
+        // As it starts to appear, so the keys go to it during its opening animation.
+        onAboutToShow: { row = 0; panel.forceActiveFocus() }
+
+        FocusScope {
+            id: panel
+            implicitWidth: settingsColumn.implicitWidth
+            implicitHeight: settingsColumn.implicitHeight
+            anchors.fill: parent
+            LayoutMirroring.enabled: win.rightToLeft
+            LayoutMirroring.childrenInherit: true
+            Keys.onUpPressed: settings.row = Math.max(0, settings.row - 1)
+            Keys.onDownPressed: settings.row = Math.min(settings.rows.length - 1, settings.row + 1)
+            // Mirrored rows run the other way, so the arrow keys follow what's seen.
+            Keys.onLeftPressed: settings.step(win.rightToLeft ? 1 : -1)
+            Keys.onRightPressed: settings.step(win.rightToLeft ? -1 : 1)
+            // The panel has the keyboard, so the window's S shortcut doesn't reach it.
+            Keys.onPressed: event => { if (event.key === Qt.Key_S) { settings.close(); event.accepted = true } }
+
+            ColumnLayout {
+                id: settingsColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                spacing: 4
+
+                Repeater {
+                    model: settings.rows
+                    delegate: Rectangle {
+                        id: settingRow
+                        required property int index
+                        required property var modelData
+                        Layout.fillWidth: true
+                        implicitHeight: Math.round(win.uiSize * 2.7)
+                        radius: Math.min(4, theme.radius)
+                        color: settings.row === index ? Qt.rgba(theme.colors.selection.r, theme.colors.selection.g,
+                                                                  theme.colors.selection.b, 0.5) : "transparent"
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 8
+                            spacing: 8
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: settingRow.modelData.label
+                                color: settings.row === settingRow.index ? theme.foreground : win.muted
+                                elide: Text.ElideRight
+                            }
+                            Repeater {
+                                model: settingRow.modelData.options
+                                delegate: Rectangle {
+                                    id: choice
+                                    required property var modelData
+                                    readonly property bool isSize: settingRow.modelData.key === "size"
+                                    readonly property bool chosen: !isSize && settings.current(settingRow.modelData.key) === modelData.value
+                                    readonly property bool readout: isSize && modelData.value === 0
+                                    implicitWidth: Math.max(Math.round(win.uiSize * 4.2), choiceLabel.implicitWidth + 24)
+                                    implicitHeight: Math.round(win.uiSize * 2)
+                                    radius: Math.min(4, theme.radius)
+                                    color: chosen ? theme.accent : "transparent"
+                                    border.color: chosen || readout ? "transparent" : theme.colors.selection
+                                    Label {
+                                        id: choiceLabel
+                                        anchors.centerIn: parent
+                                        text: choice.modelData.label
+                                        color: choice.chosen ? theme.accentForeground : theme.foreground
+                                        font.family: settingRow.modelData.key === "typeface" && choice.modelData.value === "serif"
+                                                     ? "Noto Serif" : win.font.family
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        enabled: !choice.readout
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: {
+                                            settings.row = settingRow.index
+                                            settings.choose(settingRow.modelData.key, choice.modelData.value)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 6
+                    horizontalAlignment: Text.AlignHCenter
+                    text: qsTr("↑ ↓ to choose  ·  ← → to change  ·  S to close")
+                    color: win.muted
+                    font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                }
+            }
+        }
+    }
+
     // The table of contents: Up and Down to choose, Enter to go there.
     Popup {
         id: contents
@@ -1108,6 +1274,7 @@ ApplicationWindow {
                     { keys: "W", action: qsTr("Fit pages to the width or the window") },
                     { keys: "D", action: qsTr("One page or two side by side") },
                     { keys: "I", action: qsTr("Color pages like the theme") },
+                    { keys: "S", action: qsTr("Reading settings: typeface, spacing, column") },
                     { keys: "A", action: qsTr("Change how pages turn") },
                     { keys: "F", action: qsTr("Full screen") },
                     { keys: "Esc", action: qsTr("Back to the library") },

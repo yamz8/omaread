@@ -73,6 +73,13 @@ class Backend : public QObject {
     // How a page turns: one of transitions, "slide" by default.
     Q_PROPERTY(QString transition READ transition WRITE setTransition NOTIFY settingsChanged)
     Q_PROPERTY(QStringList transitions READ transitions CONSTANT)
+    // How a flowing book's text is set, for every book: "serif" or "sans";
+    // "compact", "normal" or "relaxed" lines; a "narrow", "medium" or "wide"
+    // column; and ragged or justified lines.
+    Q_PROPERTY(QString typeface READ typeface WRITE setTypeface NOTIFY settingsChanged)
+    Q_PROPERTY(QString lineSpacing READ lineSpacing WRITE setLineSpacing NOTIFY settingsChanged)
+    Q_PROPERTY(QString columnWidth READ columnWidth WRITE setColumnWidth NOTIFY settingsChanged)
+    Q_PROPERTY(bool justify READ justify WRITE setJustify NOTIFY settingsChanged)
 
 public:
     static constexpr double defaultTextScale = 1.5;
@@ -133,6 +140,17 @@ public:
     QString transition() const { return m_transition; }
     void setTransition(const QString &transition);
     static QStringList transitions() { return {"slide", "flip", "cover", "fade", "none"}; }
+    QString typeface() const { return m_typeface; }
+    void setTypeface(const QString &typeface);
+    QString lineSpacing() const { return m_lineSpacing; }
+    void setLineSpacing(const QString &spacing);
+    QString columnWidth() const { return m_columnWidth; }
+    void setColumnWidth(const QString &width);
+    bool justify() const { return m_justify; }
+    void setJustify(bool justify);
+    static QStringList typefaces() { return {"serif", "sans"}; }
+    static QStringList lineSpacings() { return {"compact", "normal", "relaxed"}; }
+    static QStringList columnWidths() { return {"narrow", "medium", "wide"}; }
 
     Q_INVOKABLE void openUrl(const QUrl &url);
     Q_INVOKABLE void openFile(const QString &path, const QString &password = {});
@@ -159,7 +177,10 @@ public:
     Q_INVOKABLE void copyText(const QString &text);
     // Opens up a chapter's lines for reading, as a factor of their height.
     // TextEdit has no line height of its own, so it is set on every block.
-    Q_INVOKABLE void spaceLines(QQuickTextDocument *document, double factor, double paragraphGap = 0);
+    // Sets a flowing chapter's lines: their height as a multiple of the text
+    // size, the gap after a Markdown paragraph, and justified or ragged.
+    Q_INVOKABLE void typeset(QQuickTextDocument *document, double lineHeight, double paragraphGap = 0,
+                             bool justify = false);
     // Puts a chapter's images into its document as it arrives. Left to the
     // TextEdit, an image it hasn't drawn before loads late and is never shown.
     Q_INVOKABLE void loadImages(QQuickTextDocument *document);
@@ -238,6 +259,11 @@ private:
     int m_readingWidth = 0;
     double m_textScale = defaultTextScale;
     bool m_tintPages = false;
+    // A book reads best in a serif, as printed books are set.
+    QString m_typeface = "serif";
+    QString m_lineSpacing = "normal";
+    QString m_columnWidth = "medium";
+    bool m_justify = false;
     bool m_spread = false;
     QString m_transition = "slide";
     QTimer m_saveTimer;

@@ -12,6 +12,7 @@
 #include <QQuickWindow>
 #include <QRegularExpression>
 #include <QTemporaryDir>
+#include <QTextBlock>
 #include <QtTest>
 
 #include <QBuffer>
@@ -629,6 +630,30 @@ private slots:
         QCOMPARE(again.transition(), QString("cover"));
     }
 
+    void backendRemembersHowTextIsSet() {
+        QTemporaryDir state;
+        FakePicker picker;
+        {
+            Backend backend(state.path(), &picker);
+            QCOMPARE(backend.typeface(), QString("serif"));
+            QCOMPARE(backend.lineSpacing(), QString("normal"));
+            QCOMPARE(backend.columnWidth(), QString("medium"));
+            QVERIFY(!backend.justify());
+            backend.setTypeface("comic");
+            QCOMPARE(backend.typeface(), QString("serif"));
+            backend.setTypeface("sans");
+            backend.setLineSpacing("relaxed");
+            backend.setColumnWidth("wide");
+            backend.setJustify(true);
+            backend.save();
+        }
+        Backend again(state.path(), &picker);
+        QCOMPARE(again.typeface(), QString("sans"));
+        QCOMPARE(again.lineSpacing(), QString("relaxed"));
+        QCOMPARE(again.columnWidth(), QString("wide"));
+        QVERIFY(again.justify());
+    }
+
     void backendAsksForAPassword() {
         QTemporaryDir state, files;
         FakePicker picker;
@@ -956,6 +981,71 @@ private slots:
         run = omaread({"skill"});
         QCOMPARE(run.code, 0);
         QVERIFY(run.out.startsWith("---\nname: omaread"));
+    }
+
+    void windowSetsTheTextFromTheSettings() {
+        QTemporaryDir dir, files;
+        Translator translator(dir.path() + "/language");
+        Theme theme(dir.path());
+        FakePicker picker;
+        Backend backend(dir.path() + "/state", &picker);
+        QQmlApplicationEngine engine;
+        QStringList warnings;
+        connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &errors) {
+            for (const auto &error : errors)
+                warnings << error.toString();
+        });
+        engine.rootContext()->setContextProperty("translator", &translator);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.addImageProvider("omaread", backend.createPageProvider());
+        engine.load(QUrl("qrc:/Main.qml"));
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QTRY_VERIFY(window->property("settled").toBool());
+        backend.setTransition("none");
+
+        backend.openFile(writeText(files.filePath("story.md"),
+                                   "# Story\n\nA first paragraph, long enough to run over more than one line of the column.\n"));
+        QTRY_VERIFY(backend.isOpen());
+        auto *prose = item(window->contentItem(), "prose");
+        QVERIFY(prose);
+        auto *document = prose->property("textDocument").value<QQuickTextDocument *>()->textDocument();
+        const auto paragraph = [&] { return document->lastBlock().blockFormat(); };
+        QTRY_COMPARE(paragraph().alignment() & Qt::AlignHorizontal_Mask, Qt::AlignLeading);
+        const double lineHeight = paragraph().lineHeight();
+        const double width = prose->width();
+
+        // S opens the settings, and the key right after it already goes to them.
+        QTest::keyClick(window, Qt::Key_S);
+        QTest::keyClick(window, Qt::Key_Right);
+        QCOMPARE(backend.typeface(), QString("sans"));
+        QCOMPARE(backend.section(), 0);
+        // Line spacing, the column, and justified lines, each two rows on.
+        QTest::keyClick(window, Qt::Key_Down);
+        QTest::keyClick(window, Qt::Key_Down);
+        QTest::keyClick(window, Qt::Key_Right);
+        QCOMPARE(backend.lineSpacing(), QString("relaxed"));
+        QTRY_VERIFY(paragraph().lineHeight() > lineHeight);
+        QTest::keyClick(window, Qt::Key_Down);
+        QTest::keyClick(window, Qt::Key_Right);
+        QCOMPARE(backend.columnWidth(), QString("wide"));
+        QTRY_VERIFY(prose->width() > width);
+        QTest::keyClick(window, Qt::Key_Down);
+        QTest::keyClick(window, Qt::Key_Right);
+        QVERIFY(backend.justify());
+        QTRY_COMPARE(paragraph().alignment() & Qt::AlignHorizontal_Mask, Qt::AlignJustify);
+        // The heading isn't justified, and S closes the settings again.
+        QCOMPARE(document->firstBlock().blockFormat().alignment() & Qt::AlignHorizontal_Mask, Qt::AlignLeft);
+        QObject *panel = window->findChild<QObject *>("settings");
+        QVERIFY(panel && panel->property("visible").toBool());
+        QTest::keyClick(window, Qt::Key_S);
+        QTRY_VERIFY(!panel->property("visible").toBool());
+        QTRY_VERIFY(!window->property("busy").toBool());
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 
     void windowShowsAChaptersImagesAfterAJump() {

@@ -25,10 +25,11 @@ namespace {
 
 // Enough to find any recent book again without the list becoming an archive.
 constexpr int maxLibrary = 60;
-// Where spaceLines() records the gap it gave the chapter, and which paragraphs
-// it gave one, so a new text size changes only those.
+// Where typeset() records how it set the chapter, and which paragraphs it gave
+// a gap, so a new text size or setting changes only what it set itself.
 constexpr int paragraphGapProperty = QTextFormat::UserProperty + 1;
 constexpr int paragraphGapSetProperty = QTextFormat::UserProperty + 2;
+constexpr int justifyProperty = QTextFormat::UserProperty + 3;
 
 QString defaultStateDirectory() {
     QString state = qEnvironmentVariable("XDG_STATE_HOME");
@@ -72,6 +73,13 @@ void Backend::readState() {
     m_spread = state.value("spread").toBool();
     if (const QString transition = state.value("transition").toString(); transitions().contains(transition))
         m_transition = transition;
+    if (const QString value = state.value("typeface").toString(); typefaces().contains(value))
+        m_typeface = value;
+    if (const QString value = state.value("lineSpacing").toString(); lineSpacings().contains(value))
+        m_lineSpacing = value;
+    if (const QString value = state.value("columnWidth").toString(); columnWidths().contains(value))
+        m_columnWidth = value;
+    m_justify = state.value("justify").toBool();
     for (const QJsonValue &value : state.value("books").toArray()) {
         const QJsonObject book = value.toObject();
         Entry entry{book.value("path").toString(), book.value("title").toString(), book.value("author").toString(),
@@ -91,7 +99,9 @@ void Backend::save() {
                                  {"section", entry.section},   {"sections", entry.sections},
                                  {"position", entry.position}, {"opened", double(entry.opened)}});
     const QJsonObject state{
-        {"textScale", m_textScale}, {"tintPages", m_tintPages}, {"spread", m_spread}, {"transition", m_transition}, {"books", books}};
+        {"textScale", m_textScale}, {"tintPages", m_tintPages}, {"spread", m_spread}, {"transition", m_transition},
+        {"typeface", m_typeface},   {"lineSpacing", m_lineSpacing}, {"columnWidth", m_columnWidth},
+        {"justify", m_justify},     {"books", books}};
     QDir().mkpath(QFileInfo(m_stateFile).path());
     // Atomic, so a crash mid-write never loses the whole library.
     QSaveFile file(m_stateFile);
@@ -263,6 +273,38 @@ void Backend::setTransition(const QString &transition) {
     if (transition == m_transition || !transitions().contains(transition))
         return;
     m_transition = transition;
+    emit settingsChanged();
+    scheduleSave();
+}
+
+void Backend::setTypeface(const QString &typeface) {
+    if (typeface == m_typeface || !typefaces().contains(typeface))
+        return;
+    m_typeface = typeface;
+    emit settingsChanged();
+    scheduleSave();
+}
+
+void Backend::setLineSpacing(const QString &spacing) {
+    if (spacing == m_lineSpacing || !lineSpacings().contains(spacing))
+        return;
+    m_lineSpacing = spacing;
+    emit settingsChanged();
+    scheduleSave();
+}
+
+void Backend::setColumnWidth(const QString &width) {
+    if (width == m_columnWidth || !columnWidths().contains(width))
+        return;
+    m_columnWidth = width;
+    emit settingsChanged();
+    scheduleSave();
+}
+
+void Backend::setJustify(bool justify) {
+    if (justify == m_justify)
+        return;
+    m_justify = justify;
     emit settingsChanged();
     scheduleSave();
 }
@@ -611,19 +653,21 @@ void Backend::loadImages(QQuickTextDocument *document) {
         text->markContentsDirty(0, text->characterCount());
 }
 
-void Backend::spaceLines(QQuickTextDocument *document, double factor, double paragraphGap) {
+void Backend::typeset(QQuickTextDocument *document, double lineHeight, double paragraphGap, bool justify) {
     QTextDocument *text = document ? document->textDocument() : nullptr;
     if (!text || text->isEmpty())
         return;
-    const qreal height = factor * 100;
-    // Already spaced: changing it again would only lay the chapter out twice.
+    const qreal height = lineHeight * 100;
+    // Already set this way: setting it again would only lay the chapter out twice.
     const QTextBlockFormat first = text->firstBlock().blockFormat();
     if (qFuzzyCompare(first.lineHeight(), height) && first.lineHeightType() == QTextBlockFormat::ProportionalHeight
-        && qFuzzyCompare(first.doubleProperty(paragraphGapProperty) + 1, paragraphGap + 1))
+        && qFuzzyCompare(first.doubleProperty(paragraphGapProperty) + 1, paragraphGap + 1)
+        && first.hasProperty(justifyProperty) && first.boolProperty(justifyProperty) == justify)
         return;
     QTextBlockFormat format;
     format.setLineHeight(height, QTextBlockFormat::ProportionalHeight);
     format.setProperty(paragraphGapProperty, paragraphGap);
+    format.setProperty(justifyProperty, justify);
     QTextCursor cursor(text);
     cursor.beginEditBlock();
     cursor.select(QTextCursor::Document);
@@ -633,16 +677,29 @@ void Backend::spaceLines(QQuickTextDocument *document, double factor, double par
     // size, but leave headings, lists and code as the document laid them out.
     // Plain text is left alone: a hard-wrapped file has a block for every line.
     const bool markdown = m_book && m_book->kind == Book::Kind::Markdown;
-    for (QTextBlock block = markdown ? text->begin() : text->end(); block.isValid(); block = block.next()) {
+    for (QTextBlock block = text->begin(); block.isValid(); block = block.next()) {
         QTextBlockFormat own = block.blockFormat();
-        const bool bare = own.headingLevel() == 0 && !block.textList() && !own.hasProperty(QTextFormat::BlockCodeFence)
-                          && !own.nonBreakableLines() && own.topMargin() == 0
+        const bool code = own.hasProperty(QTextFormat::BlockCodeFence) || own.nonBreakableLines();
+        bool changed = false;
+        const bool bare = markdown && own.headingLevel() == 0 && !block.textList() && !code && own.topMargin() == 0
                           && (own.bottomMargin() == 0 || own.boolProperty(paragraphGapSetProperty));
-        if (!bare)
-            continue;
-        own.setBottomMargin(paragraphGap);
-        own.setProperty(paragraphGapSetProperty, true);
-        QTextCursor(block).setBlockFormat(own);
+        if (bare) {
+            own.setBottomMargin(paragraphGap);
+            own.setProperty(paragraphGapSetProperty, true);
+            changed = true;
+        }
+        // Justified or ragged is the reader's choice for running text, as it
+        // is on any e-reader; text the book centers or sets right stays so.
+        const Qt::Alignment horizontal = own.alignment() & Qt::AlignHorizontal_Mask;
+        const bool running = own.headingLevel() == 0 && !code
+                             && (!own.hasProperty(QTextFormat::BlockAlignment) || horizontal == Qt::AlignLeft
+                                 || horizontal == Qt::AlignLeading || horizontal == Qt::AlignJustify);
+        if (running) {
+            own.setAlignment(justify ? Qt::AlignJustify : Qt::AlignLeading);
+            changed = true;
+        }
+        if (changed)
+            QTextCursor(block).setBlockFormat(own);
     }
     cursor.endEditBlock();
 }
