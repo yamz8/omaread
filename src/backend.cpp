@@ -279,12 +279,19 @@ void Backend::setSpread(bool spread) {
     scheduleSave();
 }
 
+void Backend::setInk(const QColor &ink) {
+    if (ink == m_ink)
+        return;
+    m_ink = ink;
+    updateText();
+}
+
 void Backend::updateText() {
     QString text;
     if (m_book && !m_book->paged() && m_section < m_book->sections.size()) {
         text = m_book->sections[m_section];
         if (m_book->kind == Book::Kind::Epub)
-            text = Book::fitImages(text, m_readingWidth);
+            text = Book::withInk(Book::fitImages(text, m_readingWidth), m_ink);
     }
     if (text != m_text) {
         m_text = text;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QColor>
 #include <QFutureWatcher>
 #include <QObject>
 #include <QRectF>
@@ -125,6 +126,8 @@ public:
     void setTextScale(double scale);
     bool tintPages() const { return m_tintPages; }
     void setTintPages(bool tint);
+    // The color an EPUB's ink images are drawn in: the theme's text color.
+    void setInk(const QColor &ink);
     bool spread() const { return m_spread; }
     void setSpread(bool spread);
     QString transition() const { return m_transition; }
@@ -219,6 +222,7 @@ private:
     double m_position = 0;
     int m_target = -1;
     QString m_text;
+    QColor m_ink;
     QVariantList m_links;
 
     QString m_query;

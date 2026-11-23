@@ -24,11 +24,13 @@ QImage PageProvider::image(const Book &book, const QString &id, const QSize &req
         const QColor foreground = parts.size() >= 5 ? QColor("#" + parts[4]) : QColor();
         return book.renderPage(parts[2].toInt(), requestedSize, background, foreground);
     }
-    if (parts[0] == "res") {
+    if (parts[0] == "res" || parts[0] == "ink") {
         QImage image = book.resource(QString::fromUtf8(QByteArray::fromHex(parts[2].toLatin1())));
         if (!image.isNull() && requestedSize.isValid() && !requestedSize.isEmpty()
             && (image.width() > requestedSize.width() || image.height() > requestedSize.height()))
             image = image.scaled(requestedSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        if (parts[0] == "ink" && parts.size() >= 4 && !image.isNull())
+            image = Book::inked(image, QColor("#" + parts[3]));
         return image;
     }
     return {};

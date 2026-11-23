@@ -100,6 +100,15 @@ public:
     static QString fitImages(const QString &html, int width);
     // The text of a counted URL for an image the book holds, for <img src>.
     static QString resourceUrl(int bookId, const QString &path);
+    // The same for an ink image: dark lines on a transparent ground, as a
+    // title page's lettering or an ornament often is. A window gives it the
+    // theme's text color by appending /<rrggbb> (see withInk), so it reads on
+    // a dark theme as well as a light one.
+    static QString inkUrl(int bookId, const QString &path);
+    static QString withInk(const QString &html, const QColor &ink);
+    // Whether an image is ink, and the image redrawn in another color.
+    static bool isInk(const QImage &image);
+    static QImage inked(const QImage &image, const QColor &ink);
 
 private:
     Book() = default;

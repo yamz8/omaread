@@ -64,6 +64,9 @@ int main(int argc, char *argv[]) {
     Theme theme;
     Backend backend;
     QObject::connect(&translator, &Translator::changed, &backend, &Backend::retranslate);
+    // Ink images follow the theme's text color as the theme changes.
+    backend.setInk(theme.foreground());
+    QObject::connect(&theme, &Theme::changed, &backend, [&] { backend.setInk(theme.foreground()); });
 
     QQmlApplicationEngine engine;
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);

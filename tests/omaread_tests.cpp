@@ -397,6 +397,38 @@ private slots:
         QVERIFY(Book::fitImages(one, 500).contains("width=\"500\" height=\"125\""));
     }
 
+    void inkImagesTakeTheThemeColor() {
+        // Black lettering on a transparent ground, as Standard Ebooks' title pages are.
+        QImage lettering(40, 20, QImage::Format_ARGB32);
+        lettering.fill(Qt::transparent);
+        for (int x = 5; x < 35; ++x)
+            lettering.setPixel(x, 10, qRgba(0, 0, 0, 255));
+        QVERIFY(Book::isInk(lettering));
+
+        // A photograph, a colored drawing, and an empty image are left as they are.
+        QImage photo(40, 20, QImage::Format_RGB32);
+        photo.fill(Qt::black);
+        QVERIFY(!Book::isInk(photo));
+        QImage drawing = lettering;
+        drawing.setPixel(6, 10, qRgba(200, 30, 30, 255));
+        QVERIFY(!Book::isInk(drawing));
+        QImage blank(40, 20, QImage::Format_ARGB32);
+        blank.fill(Qt::transparent);
+        QVERIFY(!Book::isInk(blank));
+
+        const QImage light = Book::inked(lettering, QColor("#eeeeee"));
+        QCOMPARE(QColor::fromRgba(light.pixel(10, 10)), QColor("#eeeeee"));
+        QCOMPARE(qAlpha(light.pixel(10, 5)), 0);
+
+        // The window's color goes on ink URLs only.
+        const QString html = "<img src=\"" + Book::inkUrl(3, "a.png") + "\" /><img src=\""
+                             + Book::resourceUrl(3, "b.png") + "\" />";
+        const QString colored = Book::withInk(html, QColor("#123456"));
+        QVERIFY(colored.contains(Book::inkUrl(3, "a.png") + "/123456\""));
+        QVERIFY(colored.contains(Book::resourceUrl(3, "b.png") + "\""));
+        QCOMPARE(Book::withInk(html, QColor()), html);
+    }
+
     void epubFallsBackToTheNcx() {
         QTemporaryDir dir;
         Book::Error error;

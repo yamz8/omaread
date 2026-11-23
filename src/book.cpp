@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QImageReader>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStringDecoder>
 #include <QTextDocument>
 #include <QThread>
@@ -179,6 +180,18 @@ QSize imageSize(const QByteArray &data) {
     buffer.open(QIODevice::ReadOnly);
     QImageReader reader(&buffer);
     return reader.size();
+}
+
+// An image no bigger than 128 px, enough to tell what kind of image it is.
+QImage smallImage(const QByteArray &data) {
+    QByteArray copy = data;
+    QBuffer buffer(&copy);
+    buffer.open(QIODevice::ReadOnly);
+    QImageReader reader(&buffer);
+    const QSize size = reader.size();
+    if (size.isValid() && (size.width() > 128 || size.height() > 128))
+        reader.setScaledSize(size.scaled(128, 128, Qt::KeepAspectRatio));
+    return reader.read();
 }
 
 bool isImageName(const QString &name) {
@@ -354,10 +367,15 @@ bool Book::loadEpub(Error *error) {
 
     // The images chapters show stay in the book, drawn by the provider on demand.
     QHash<QString, QSize> imageSizes;
+    QSet<QString> inkImages;
     for (const Item &item : std::as_const(manifest)) {
         if (item.type.startsWith("image/") && files.contains(item.path)) {
             m_resources.insert(item.path, files.value(item.path));
             imageSizes.insert(item.path, imageSize(files.value(item.path)));
+            // A photograph has no transparent ground, so only the formats
+            // that can are looked at, and only at a small size.
+            if (item.type != "image/jpeg" && isInk(smallImage(files.value(item.path))))
+                inkImages.insert(item.path);
         }
     }
 
@@ -366,7 +384,7 @@ bool Book::loadEpub(Error *error) {
         if (!m_resources.contains(resource))
             return alt.isEmpty() ? QString() : "<i>" + escapeAttribute(alt) + "</i>";
         const QSize size = imageSizes.value(resource);
-        QString tag = "<img src=\"" + resourceUrl(id, resource) + "\"";
+        QString tag = "<img src=\"" + (inkImages.contains(resource) ? inkUrl(id, resource) : resourceUrl(id, resource)) + "\"";
         if (size.isValid())
             tag += QString(" width=\"%1\" height=\"%2\"").arg(size.width()).arg(size.height());
         return tag + " />";
@@ -790,6 +808,58 @@ QImage Book::resource(const QString &resourcePath) const {
 
 QString Book::resourceUrl(int bookId, const QString &resourcePath) {
     return QString("image://omaread/res/%1/%2").arg(bookId).arg(QString::fromLatin1(resourcePath.toUtf8().toHex()));
+}
+
+QString Book::inkUrl(int bookId, const QString &resourcePath) {
+    return QString("image://omaread/ink/%1/%2").arg(bookId).arg(QString::fromLatin1(resourcePath.toUtf8().toHex()));
+}
+
+QString Book::withInk(const QString &html, const QColor &ink) {
+    if (!ink.isValid())
+        return html;
+    static const QRegularExpression url("(image://omaread/ink/\\d+/[0-9a-f]+)\"");
+    QString out = html;
+    return out.replace(url, "\\1/" + ink.name().mid(1) + "\"");
+}
+
+bool Book::isInk(const QImage &source) {
+    if (source.isNull() || !source.hasAlphaChannel())
+        return false;
+    const QImage image = source.convertToFormat(QImage::Format_ARGB32);
+    qsizetype clear = 0, dark = 0, light = 0;
+    for (int y = 0; y < image.height(); ++y) {
+        const auto *line = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            const QRgb pixel = line[x];
+            if (qAlpha(pixel) < 16) {
+                ++clear;
+                continue;
+            }
+            const int high = std::max({qRed(pixel), qGreen(pixel), qBlue(pixel)});
+            const int low = std::min({qRed(pixel), qGreen(pixel), qBlue(pixel)});
+            // Grey only: a drawing in color stays as it is.
+            if (high - low > 40)
+                return false;
+            ++(high < 128 ? dark : light);
+        }
+    }
+    // Mostly ground, and drawn mostly in dark strokes. A light edge around
+    // them, as Standard Ebooks' lettering has, fades out when inked.
+    return dark > 0 && dark >= light && clear >= qsizetype(image.width()) * image.height() / 4;
+}
+
+QImage Book::inked(const QImage &source, const QColor &ink) {
+    QImage image = source.convertToFormat(QImage::Format_ARGB32);
+    const QRgb color = ink.rgb();
+    for (int y = 0; y < image.height(); ++y) {
+        auto *line = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < image.width(); ++x) {
+            // Darker strokes stay stronger: grey anti-aliasing fades out.
+            const int darkness = 255 - qGray(line[x]);
+            line[x] = qRgba(qRed(color), qGreen(color), qBlue(color), qAlpha(line[x]) * darkness / 255);
+        }
+    }
+    return image;
 }
 
 QString Book::fitImages(const QString &html, int width) {
