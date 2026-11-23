@@ -30,6 +30,11 @@ struct SearchHit {
     int section = 0;
     int occurrence = 0;
     QRectF rect;
+    // In flowing text: where the match starts in its section's text, and the
+    // words around it, with where the match sits in them.
+    int offset = -1;
+    QString context;
+    int contextAt = 0;
 };
 
 // A link on a PDF page: the area, as fractions of the page, and where it goes,

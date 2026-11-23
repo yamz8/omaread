@@ -244,8 +244,17 @@ double Backend::progress() const {
 }
 
 QString Backend::chapterLabel() const {
-    const int index = tocIndex();
-    if (!m_book || index < 0)
+    return chapterLabelFor(m_section);
+}
+
+QString Backend::chapterLabelFor(int section) const {
+    if (!m_book)
+        return {};
+    int index = -1;
+    for (int i = 0; i < m_book->toc.size(); ++i)
+        if (m_book->toc[i].section <= section)
+            index = i;
+    if (index < 0)
         return {};
     // The entry and the ones it sits under, nearest first.
     QStringList chain;
@@ -715,6 +724,22 @@ void Backend::showHit(int index) {
             goTo(m_hits[index].section, 0);
     }
     emit hitChanged();
+}
+
+void Backend::chooseHit(int index) {
+    if (index >= 0 && index < m_hits.size())
+        showHit(index);
+}
+
+QVariantList Backend::hitList() const {
+    QVariantList list;
+    for (int i = 0; i < std::min<int>(int(m_hits.size()), listedHits); ++i) {
+        const SearchHit &hit = m_hits[i];
+        list << QVariantMap{{"section", hit.section},     {"chapter", chapterLabelFor(hit.section)},
+                            {"context", hit.context},     {"at", hit.contextAt},
+                            {"length", int(m_query.size())}};
+    }
+    return list;
 }
 
 void Backend::nextHit() {

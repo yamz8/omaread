@@ -830,7 +830,8 @@ QList<SearchHit> Book::search(const QString &words, const std::atomic_bool *canc
             for (const QRectF &rect : page->search(needle, Poppler::Page::IgnoreCase | Poppler::Page::IgnoreDiacritics))
                 hits << SearchHit{index, occurrence++,
                                   QRectF(rect.x() / size.width(), rect.y() / size.height(), rect.width() / size.width(),
-                                         rect.height() / size.height())};
+                                         rect.height() / size.height()),
+                                  -1, {}, 0};
         }
         return hits;
     }
@@ -842,8 +843,29 @@ QList<SearchHit> Book::search(const QString &words, const std::atomic_bool *canc
         const QString text = plainText(section);
         int occurrence = 0;
         for (qsizetype at = text.indexOf(needle, 0, Qt::CaseInsensitive); at >= 0;
-             at = text.indexOf(needle, at + needle.size(), Qt::CaseInsensitive))
-            hits << SearchHit{section, occurrence++, {}};
+             at = text.indexOf(needle, at + needle.size(), Qt::CaseInsensitive)) {
+            // Words that begin with what was asked for, as a reader means it:
+            // "lamp" finds "lamps", but "axe" never finds "waxed".
+            if (at > 0 && (text[at - 1].isLetterOrNumber() || text[at - 1] == '\''
+                           || text[at - 1] == QChar(0x2019)) && needle[0].isLetterOrNumber())
+                continue;
+            SearchHit hit{section, occurrence++, {}, int(at), {}, 0};
+            // The words around it, cut at spaces, on one line.
+            qsizetype from = std::max<qsizetype>(0, at - 60), to = std::min(text.size(), at + needle.size() + 90);
+            if (from > 0)
+                if (const qsizetype space = text.indexOf(' ', from); space >= 0 && space < at)
+                    from = space + 1;
+            if (to < text.size())
+                if (const qsizetype space = text.lastIndexOf(' ', to); space > at + needle.size())
+                    to = space;
+            QString context = text.mid(from, to - from);
+            for (QChar &c : context)
+                if (c == '\n' || c == QChar::ParagraphSeparator || c == QChar::LineSeparator || c == '\t')
+                    c = ' ';
+            hit.context = (from > 0 ? QStringLiteral("…") : QString()) + context + (to < text.size() ? QStringLiteral("…") : QString());
+            hit.contextAt = int(at - from) + (from > 0 ? 1 : 0);
+            hits << hit;
+        }
     }
     return hits;
 }

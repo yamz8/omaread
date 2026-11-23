@@ -16,7 +16,7 @@ Open a book from the library, with `O`, by dropping it on the window, or from th
 omaread open book.epub
 ```
 
-Search the whole book with `/`, select words with the mouse and copy them with `Ctrl+C`, follow links inside the book, and read PDFs and comics two pages at a time with `D`. Books are set in a serif by default; `S` changes the typeface, text size, line spacing, column width, and ragged or justified lines, for every book. Pages turn with a slide, a paper-like flip, a cover, a fade, or no animation at all; `A` picks the next one and the choice is remembered. A PDF locked with a password asks for it, and never keeps it. The text size follows the desktop's, set in `~/.config/omarchy/shell.toml`.
+Search the whole book with `/`, for words that begin with what you type, and choose a match from a list that shows each one in the words around it, select words with the mouse and copy them with `Ctrl+C`, follow links inside the book, and read PDFs and comics two pages at a time with `D`. Books are set in a serif by default; `S` changes the typeface, text size, line spacing, column width, and ragged or justified lines, for every book. Pages turn with a slide, a paper-like flip, a cover, a fade, or no animation at all; `A` picks the next one and the choice is remembered. A PDF locked with a password asks for it, and never keeps it. The text size follows the desktop's, set in `~/.config/omarchy/shell.toml`.
 
 ## Commands
 

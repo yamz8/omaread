@@ -304,15 +304,10 @@ ApplicationWindow {
             }
             return
         }
-        const text = prose.getText(0, prose.length).toLowerCase()
-        const words = backend.query.toLowerCase()
-        let at = -1
-        for (let i = 0; i <= backend.hitOccurrence; ++i) {
-            at = text.indexOf(words, at + 1)
-            if (at < 0)
-                return
-        }
-        prose.select(at, at + words.length)
+        const at = backend.hitOffset
+        if (at < 0)
+            return
+        prose.select(at, at + backend.query.length)
         reveal(prose.y + prose.positionToRectangle(at).y - view.height / 3)
     }
     function resize(by) {
@@ -883,6 +878,76 @@ ApplicationWindow {
                     value: win.readingSize
                 }
 
+                // The matches, each in the words around it, to choose from. The
+                // current one is the one the text shows.
+                Rectangle {
+                    id: findResults
+                    objectName: "findResults"
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: findBar.top
+                    height: Math.min(hitRows.contentHeight, Math.round(win.uiSize * 3.6) * 5) + 8
+                    visible: win.finding && backend.hitCount > 0 && !backend.searching
+                    color: theme.background
+                    border.color: theme.colors.selection
+
+                    ListView {
+                        id: hitRows
+                        objectName: "hitRows"
+                        anchors.fill: parent
+                        anchors.margins: 4
+                        clip: true
+                        model: backend.hitList
+                        currentIndex: backend.hitIndex < count ? backend.hitIndex : -1
+                        highlightMoveDuration: 0
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: ScrollBar {}
+                        onCurrentIndexChanged: if (currentIndex >= 0) positionViewAtIndex(currentIndex, ListView.Contain)
+
+                        delegate: Rectangle {
+                            id: hitRow
+                            required property int index
+                            required property var modelData
+                            width: ListView.view.width
+                            height: Math.round(win.uiSize * 3.6)
+                            radius: Math.min(4, theme.radius)
+                            color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
+                            function escaped(text) { return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") }
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                spacing: 0
+                                Label {
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignLeft
+                                    text: backend.paged ? qsTr("Page %1").arg(win.number(hitRow.modelData.section + 1)) : hitRow.modelData.chapter
+                                    color: win.muted
+                                    font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                                    elide: Text.ElideRight
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignLeft
+                                    visible: hitRow.modelData.context !== ""
+                                    textFormat: Text.StyledText
+                                    text: {
+                                        const c = hitRow.modelData.context, at = hitRow.modelData.at, n = hitRow.modelData.length
+                                        return hitRow.escaped(c.slice(0, at)) + "<b>" + hitRow.escaped(c.slice(at, at + n)) + "</b>"
+                                               + hitRow.escaped(c.slice(at + n))
+                                    }
+                                    elide: Text.ElideRight
+                                }
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                onClicked: backend.chooseHit(hitRow.index)
+                            }
+                        }
+                    }
+                }
+
                 // Searching the book: Enter for the next match, Shift+Enter for
                 // the one before, Escape to stop.
                 Rectangle {
@@ -920,6 +985,9 @@ ApplicationWindow {
                             Keys.onReturnPressed: event => submit(event.modifiers & Qt.ShiftModifier)
                             Keys.onEnterPressed: event => submit(event.modifiers & Qt.ShiftModifier)
                             Keys.onEscapePressed: win.stopFinding()
+                            // Up and Down move through the matches, as the list shows them.
+                            Keys.onUpPressed: if (backend.hitCount > 0) backend.previousHit()
+                            Keys.onDownPressed: if (backend.hitCount > 0) backend.nextHit()
                         }
                         Label {
                             objectName: "findStatus"

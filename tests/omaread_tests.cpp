@@ -420,7 +420,13 @@ private slots:
         const QList<SearchHit> hits = book->search("THE END");
         QCOMPARE(hits.size(), 1);
         QCOMPARE(hits[0].section, 2);
-        QCOMPARE(book->search("e").size() > 3, true);
+        // Words that begin with what's asked for: a word's start, never its middle.
+        QCOMPARE(book->search("beg").size(), 1);
+        QCOMPARE(book->search("egan").size(), 0);
+        const QList<SearchHit> began = book->search("began");
+        QVERIFY(began[0].context.contains("It began"));
+        QCOMPARE(began[0].context.mid(began[0].contextAt, 5), QString("began"));
+        QCOMPARE(book->plainText(began[0].section).mid(began[0].offset, 5), QString("began"));
         QVERIFY(book->plainText(1).contains(QRegularExpression("It began\\squietly")));
         QVERIFY(!book->resource("OEBPS/images/pic.png").isNull());
 

@@ -61,6 +61,11 @@ class Backend : public QObject {
     Q_PROPERTY(int hitIndex READ hitIndex NOTIFY hitChanged)
     Q_PROPERTY(int hitSection READ hitSection NOTIFY hitChanged)
     Q_PROPERTY(int hitOccurrence READ hitOccurrence NOTIFY hitChanged)
+    // Where the current match starts in its section's text, or -1.
+    Q_PROPERTY(int hitOffset READ hitOffset NOTIFY hitChanged)
+    // The first matches, each {section, chapter, context, at, length}, for a
+    // list to choose from.
+    Q_PROPERTY(QVariantList hitList READ hitList NOTIFY searchChanged)
     // The matches on the pages shown, each {page, x, y, width, height, current}.
     Q_PROPERTY(QVariantList pageHits READ pageHits NOTIFY hitChanged)
 
@@ -145,6 +150,11 @@ public:
     int hitIndex() const { return m_hitIndex; }
     int hitSection() const { return m_hitIndex >= 0 ? m_hits[m_hitIndex].section : -1; }
     int hitOccurrence() const { return m_hitIndex >= 0 ? m_hits[m_hitIndex].occurrence : -1; }
+    int hitOffset() const { return m_hitIndex >= 0 ? m_hits[m_hitIndex].offset : -1; }
+    QVariantList hitList() const;
+    static constexpr int listedHits = 300;
+    // The part and chapter a section is in, as the footer names them.
+    QString chapterLabelFor(int section) const;
     QVariantList pageHits() const;
 
     int readingWidth() const { return m_readingWidth; }
@@ -213,6 +223,7 @@ public:
     // Searches the whole book, and goes to the first match from here on.
     Q_INVOKABLE void find(const QString &words);
     Q_INVOKABLE void nextHit();
+    Q_INVOKABLE void chooseHit(int index);
     Q_INVOKABLE void previousHit();
     Q_INVOKABLE void clearSearch();
     // Copies the words inside an area of a page, given as fractions of it, and
