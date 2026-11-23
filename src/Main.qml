@@ -35,9 +35,10 @@ ApplicationWindow {
                                  // From the moment it appears, not once its opening animation ends,
                                  // or a key pressed right after S turns the page behind it.
                                  || settings.visible || note.visible
-                                 || findField.activeFocus
+                                 || findField.activeFocus || shelfSearch.activeFocus
     readonly property bool reading: backend.open && !busy && settled
     readonly property bool browsing: !backend.open && !busy && settled
+    readonly property bool shelfKeys: browsing && !shelfSearch.activeFocus
 
     // Hyprland sizes a new window once it's on screen, so the first frames
     // are laid out at the size asked for and then again at the real one. The
@@ -125,6 +126,61 @@ ApplicationWindow {
     function scroll(dy) {
         view.contentY = Math.max(0, Math.min(view.contentY + dy, view.contentHeight - view.height))
     }
+    // The library's books as shown: the filter chosen, the search typed, and
+    // the order chosen.
+    function inFilter(book, filter) {
+        return filter === "reading" ? book.started && !book.finished
+             : filter === "unread" ? !book.started && !book.finished
+             : filter === "finished" ? book.finished : true
+    }
+    function countIn(filter) { return backend.library.filter(b => inFilter(b, filter)).length }
+    readonly property var shelf: {
+        const words = shelfSearch.text.trim().toLowerCase()
+        const collator = (a, b) => a.localeCompare(b, Qt.locale().name, { numeric: true, sensitivity: "base" })
+        const books = backend.library.filter(b => inFilter(b, backend.libraryFilter)
+            && (words === "" || b.title.toLowerCase().includes(words) || (b.author || "").toLowerCase().includes(words)))
+        const sort = backend.librarySort
+        return books.sort((a, b) => sort === "title" ? collator(a.title, b.title)
+                                  : sort === "author" ? collator(a.author || "￿", b.author || "￿") || collator(a.title, b.title)
+                                  : sort === "progress" ? b.progress - a.progress
+                                  : b.recent - a.recent)
+    }
+    readonly property var shelfView: backend.libraryView === "grid" ? shelfGrid : shelfList
+    function sortName(sort) {
+        return sort === "title" ? qsTr("Title") : sort === "author" ? qsTr("Author")
+             : sort === "progress" ? qsTr("Progress") : qsTr("Recent")
+    }
+    function nextSort() {
+        const sorts = ["recent", "title", "author", "progress"]
+        backend.librarySort = sorts[(sorts.indexOf(backend.librarySort) + 1) % sorts.length]
+        say(qsTr("In order of: %1").arg(sortName(backend.librarySort)))
+    }
+    function nextFilter(step) {
+        const filters = ["all", "reading", "unread", "finished"]
+        backend.libraryFilter = filters[(filters.indexOf(backend.libraryFilter) + step + filters.length) % filters.length]
+    }
+    // The book chosen, kept within the ones shown as a search or filter narrows them.
+    function shelfBook() { return shelf[Math.max(0, Math.min(shelfView.currentIndex, shelf.length - 1))] }
+    function openShelf() {
+        const book = shelfBook()
+        if (book)
+            backend.openFile(book.path)
+    }
+    // Arrows move through the covers as they're laid out, in any direction.
+    function moveShelf(key) {
+        const view = shelfView
+        if (view === shelfGrid) {
+            const forward = (key === Qt.Key_Right) !== rightToLeft
+            if (key === Qt.Key_Left || key === Qt.Key_Right)
+                view.currentIndex = Math.max(0, Math.min(view.count - 1, view.currentIndex + (forward ? 1 : -1)))
+            else
+                view.currentIndex = Math.max(0, Math.min(view.count - 1, view.currentIndex + (key === Qt.Key_Down ? 1 : -1) * view.columns))
+        } else if (key === Qt.Key_Down || key === Qt.Key_Up) {
+            view.currentIndex = Math.max(0, Math.min(view.count - 1, view.currentIndex + (key === Qt.Key_Down ? 1 : -1)))
+        }
+        view.positionViewAtIndex(view.currentIndex, GridView.Contain)
+    }
+
     // What the text is laid out in, so the backend counts the book's pages
     // the way they are shown, again whenever any of it changes.
     readonly property var pageLayout: [prose.width, view.height, prose.font.family, readingSize, lineHeight, backend.justify]
@@ -436,6 +492,8 @@ ApplicationWindow {
         function onSectionChanged() { win.restoring = true; win.clearSelections(); Qt.callLater(win.restore) }
         // New text, for a new section or a new text size: its layout moves the
         // view, which mustn't move the reader's place.
+        // The end of the book: said once, as the library marks it finished.
+        function onBookFinished() { win.say(qsTr("Finished: %1").arg(backend.title)) }
         function onTextAboutToChange() { win.restoring = true; Qt.callLater(win.restore) }
         function onTargetChanged() { Qt.callLater(win.showTarget) }
         function onHitChanged() { Qt.callLater(win.showHit) }
@@ -459,12 +517,13 @@ ApplicationWindow {
     Shortcut { sequence: "End"; enabled: win.reading; onActivated: { win.markJump(); win.jump(backend.sectionCount - 1, 0) } }
     Shortcut { sequence: "B"; enabled: win.reading; onActivated: win.toggleBookmark() }
     Shortcut { sequence: "Tab"; enabled: win.reading && !backend.paged; onActivated: win.chooseLink(1) }
-    Shortcut { sequence: "Backtab"; enabled: win.reading && !backend.paged; onActivated: win.chooseLink(-1) }
+    Shortcut { sequences: ["Backtab", "Shift+Backtab", "Shift+Tab"]; enabled: win.reading && !backend.paged; onActivated: win.chooseLink(-1) }
     Shortcut { sequences: ["Return", "Enter"]; enabled: win.reading && win.chosenLink !== null; onActivated: win.openChosenLink() }
     Shortcut { sequences: ["Backspace", "Alt+Left"]; enabled: win.reading && backend.canGoBack; onActivated: win.goBack() }
     Shortcut { sequences: ["Shift+Backspace", "Alt+Right"]; enabled: win.reading && backend.canGoForward; onActivated: win.goForward() }
     Shortcut { sequence: "T"; enabled: backend.open && (!win.busy || contents.visible); onActivated: contents.visible ? contents.close() : contents.open() }
     Shortcut { sequence: "G"; enabled: win.reading; onActivated: skim.open() }
+    Shortcut { sequences: ["/", StandardKey.Find]; enabled: win.shelfKeys && backend.library.length > 0; onActivated: shelfSearch.forceActiveFocus() }
     Shortcut { sequences: ["/", StandardKey.Find]; enabled: backend.open && settled && !help.opened && !contents.visible && !skim.visible; onActivated: win.startFinding() }
     Shortcut { sequences: ["N", StandardKey.FindNext]; enabled: win.reading && backend.hitCount > 0; onActivated: backend.nextHit() }
     Shortcut { sequences: ["Shift+N", StandardKey.FindPrevious]; enabled: win.reading && backend.hitCount > 0; onActivated: backend.previousHit() }
@@ -482,10 +541,28 @@ ApplicationWindow {
     Shortcut { sequence: "P"; enabled: win.reading; onActivated: win.nextProgress() }
     Shortcut { sequence: "A"; enabled: win.reading; onActivated: win.nextTransition() }
 
-    Shortcut { sequence: "Down"; enabled: win.browsing; onActivated: shelf.incrementCurrentIndex() }
-    Shortcut { sequence: "Up"; enabled: win.browsing; onActivated: shelf.decrementCurrentIndex() }
-    Shortcut { sequence: "Return"; enabled: win.browsing && shelf.count > 0; onActivated: backend.openRecent(shelf.currentIndex) }
-    Shortcut { sequence: "Delete"; enabled: win.browsing && shelf.count > 0; onActivated: backend.forget(shelf.currentIndex) }
+    // The library: arrows through the books, Enter to open, Delete to
+    // forget, M to mark read, S for the order, V for covers or a list, Tab
+    // for which books, / to search.
+    Shortcut { sequence: "Down"; enabled: win.shelfKeys; onActivated: win.moveShelf(Qt.Key_Down) }
+    Shortcut { sequence: "Up"; enabled: win.shelfKeys; onActivated: win.moveShelf(Qt.Key_Up) }
+    Shortcut { sequence: "Left"; enabled: win.shelfKeys; onActivated: win.moveShelf(Qt.Key_Left) }
+    Shortcut { sequence: "Right"; enabled: win.shelfKeys; onActivated: win.moveShelf(Qt.Key_Right) }
+    Shortcut { sequences: ["Return", "Enter"]; enabled: win.shelfKeys && win.shelf.length > 0; onActivated: win.openShelf() }
+    Shortcut { sequence: "Delete"; enabled: win.shelfKeys && win.shelf.length > 0; onActivated: backend.forgetPath(win.shelfBook().path) }
+    Shortcut {
+        sequence: "M"
+        enabled: win.shelfKeys && win.shelf.length > 0
+        onActivated: {
+            const book = win.shelfBook()
+            backend.setFinished(book.path, !book.finished)
+            win.say(book.finished ? qsTr("Not finished") : qsTr("Finished"))
+        }
+    }
+    Shortcut { sequence: "S"; enabled: win.shelfKeys; onActivated: win.nextSort() }
+    Shortcut { sequence: "V"; enabled: win.shelfKeys; onActivated: backend.libraryView = backend.libraryView === "grid" ? "list" : "grid" }
+    Shortcut { sequence: "Tab"; enabled: win.shelfKeys; onActivated: win.nextFilter(1) }
+    Shortcut { sequences: ["Backtab", "Shift+Backtab", "Shift+Tab"]; enabled: win.shelfKeys; onActivated: win.nextFilter(-1) }
 
     // Right-to-left languages mirror the window; the Translator sets the
     // application's layout direction.
@@ -501,98 +578,234 @@ ApplicationWindow {
             anchors.fill: parent
             currentIndex: backend.open ? 1 : 0
 
-            // The library: what was read before, most recent first.
+            // The library: every book read, and the ones waiting in ~/Books, as
+            // a grid of covers or a list, in the order and with the books chosen.
             Item {
                 objectName: "library"
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.topMargin: 48
-                    anchors.bottomMargin: 24
-                    anchors.leftMargin: Math.max(24, (parent.width - 720) / 2)
+                    anchors.topMargin: 40
+                    anchors.bottomMargin: 16
+                    anchors.leftMargin: Math.max(24, (parent.width - 1080) / 2)
                     anchors.rightMargin: anchors.leftMargin
-                    spacing: 16
-                    visible: shelf.count > 0
+                    spacing: 14
+                    visible: backend.library.length > 0
 
                     RowLayout {
                         Layout.fillWidth: true
                         spacing: 16
-
                         Label {
-                            Layout.fillWidth: true
                             horizontalAlignment: Text.AlignLeft
                             text: qsTr("Library")
                             font.pixelSize: win.uiSize * 2
                             font.bold: true
-                            elide: Text.ElideRight
                         }
+                        Item { Layout.fillWidth: true }
+                        TextField {
+                            id: shelfSearch
+                            objectName: "shelfSearch"
+                            Layout.preferredWidth: 240
+                            placeholderText: qsTr("Search titles and authors")
+                            Material.roundedScale: theme.radius
+                            Keys.onEscapePressed: { text = ""; library.forceActiveFocus() }
+                            Keys.onDownPressed: library.forceActiveFocus()
+                            Keys.onReturnPressed: { library.forceActiveFocus(); win.openShelf() }
+                        }
+                    }
+                    // Which books, in which order, and how they're shown.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Repeater {
+                            model: [{ key: "all", label: qsTr("All") }, { key: "reading", label: qsTr("Reading") },
+                                    { key: "unread", label: qsTr("Not started") }, { key: "finished", label: qsTr("Finished") }]
+                            delegate: Rectangle {
+                                id: chip
+                                required property var modelData
+                                readonly property bool chosen: backend.libraryFilter === modelData.key
+                                implicitWidth: chipLabel.implicitWidth + 24
+                                implicitHeight: Math.round(win.uiSize * 2.1)
+                                radius: Math.min(4, theme.radius)
+                                color: chosen ? theme.accent : "transparent"
+                                border.color: chosen ? "transparent" : theme.colors.selection
+                                Label {
+                                    id: chipLabel
+                                    anchors.centerIn: parent
+                                    text: chip.modelData.label + "  " + win.number(win.countIn(chip.modelData.key))
+                                    color: chip.chosen ? theme.accentForeground : theme.foreground
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: backend.libraryFilter = chip.modelData.key
+                                }
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
                         Label {
-                            text: qsTr("O to open · ? for keys")
+                            objectName: "shelfOrder"
                             color: win.muted
+                            text: qsTr("S: %1").arg(win.sortName(backend.librarySort)) + "  ·  "
+                                  + (backend.libraryView === "grid" ? qsTr("V: list") : qsTr("V: covers")) + "  ·  " + qsTr("? for keys")
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: win.nextSort()
+                            }
                         }
                     }
 
-                    ListView {
-                        id: shelf
-                        objectName: "shelf"
+                    // The books shown: a grid of covers, or a list.
+                    FocusScope {
+                        id: library
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        clip: true
-                        spacing: 2
-                        model: backend.library
-                        currentIndex: 0
-                        ScrollBar.vertical: ScrollBar {}
 
-                        delegate: Rectangle {
-                            id: row
-                            required property int index
-                            required property var modelData
-                            width: ListView.view.width
-                            height: Math.round(win.uiSize * 4.6)
-                            radius: Math.min(4, theme.radius)
-                            color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
+                        GridView {
+                            id: shelfGrid
+                            objectName: "shelf"
+                            anchors.fill: parent
+                            visible: backend.libraryView === "grid"
+                            clip: true
+                            readonly property int columns: Math.max(2, Math.floor(width / 190))
+                            cellWidth: Math.floor(width / columns)
+                            cellHeight: Math.round(cellWidth * 1.5) + Math.round(win.uiSize * 4.4)
+                            model: win.shelf
+                            currentIndex: 0
+                            highlightMoveDuration: 0
+                            keyNavigationEnabled: false
+                            ScrollBar.vertical: ScrollBar {}
 
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 16
-                                anchors.rightMargin: 16
-                                spacing: 16
+                            delegate: Item {
+                                id: card
+                                required property int index
+                                required property var modelData
+                                width: GridView.view.cellWidth
+                                height: GridView.view.cellHeight
+                                readonly property bool current: GridView.isCurrentItem
 
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.margins: 4
+                                    radius: Math.min(6, theme.radius)
+                                    color: card.current ? theme.colors.selection : "transparent"
+                                }
                                 ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 2
-
-                                    // Explicit alignments, so mirroring moves them in a
-                                    // right-to-left language whatever the title's script.
+                                    anchors.fill: parent
+                                    anchors.margins: 12
+                                    spacing: 6
+                                    BookCover {
+                                        Layout.fillWidth: true
+                                        Layout.preferredHeight: Math.round(width * 1.5)
+                                        book: card.modelData
+                                    }
                                     Label {
                                         Layout.fillWidth: true
                                         horizontalAlignment: Text.AlignLeft
-                                        text: row.modelData.title
-                                        font.pixelSize: Math.round(win.uiSize * 8 / 7)
+                                        text: card.modelData.title
                                         font.bold: true
                                         elide: Text.ElideRight
-                                        opacity: row.modelData.exists ? 1 : 0.5
+                                        opacity: card.modelData.exists ? 1 : 0.5
                                     }
                                     Label {
                                         Layout.fillWidth: true
                                         horizontalAlignment: Text.AlignLeft
-                                        text: row.modelData.exists
-                                              ? (row.modelData.author ? row.modelData.author + " · " : "") + row.modelData.fileName
-                                              : qsTr("Missing: %1").arg(row.modelData.fileName)
+                                        text: card.modelData.exists ? (card.modelData.author || " ") : qsTr("Missing")
                                         color: win.muted
+                                        font.pixelSize: Math.round(win.uiSize * 6 / 7)
                                         elide: Text.ElideRight
                                     }
                                 }
-                                Label {
-                                    text: win.percent(row.modelData.progress)
-                                    color: win.muted
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: shelfGrid.currentIndex = card.index
+                                    onDoubleClicked: backend.openFile(card.modelData.path)
                                 }
                             }
-                            MouseArea {
-                                anchors.fill: parent
-                                onClicked: shelf.currentIndex = row.index
-                                onDoubleClicked: backend.openRecent(row.index)
+                        }
+
+                        ListView {
+                            id: shelfList
+                            objectName: "shelfList"
+                            anchors.fill: parent
+                            visible: backend.libraryView === "list"
+                            clip: true
+                            spacing: 2
+                            model: win.shelf
+                            currentIndex: 0
+                            highlightMoveDuration: 0
+                            keyNavigationEnabled: false
+                            ScrollBar.vertical: ScrollBar {}
+
+                            delegate: Rectangle {
+                                id: row
+                                required property int index
+                                required property var modelData
+                                width: ListView.view.width
+                                height: Math.round(win.uiSize * 5)
+                                radius: Math.min(4, theme.radius)
+                                color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 12
+                                    anchors.rightMargin: 16
+                                    spacing: 14
+                                    BookCover {
+                                        Layout.preferredHeight: row.height - 12
+                                        Layout.preferredWidth: Math.round((row.height - 12) / 1.5)
+                                        book: row.modelData
+                                        small: true
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 2
+                                        // Explicit alignments, so mirroring moves them in a
+                                        // right-to-left language whatever the title's script.
+                                        Label {
+                                            Layout.fillWidth: true
+                                            horizontalAlignment: Text.AlignLeft
+                                            text: row.modelData.title
+                                            font.pixelSize: Math.round(win.uiSize * 8 / 7)
+                                            font.bold: true
+                                            elide: Text.ElideRight
+                                            opacity: row.modelData.exists ? 1 : 0.5
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            horizontalAlignment: Text.AlignLeft
+                                            text: row.modelData.exists
+                                                  ? (row.modelData.author ? row.modelData.author + " · " : "") + row.modelData.fileName
+                                                  : qsTr("Missing: %1").arg(row.modelData.fileName)
+                                            color: win.muted
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+                                    Label {
+                                        text: row.modelData.finished ? qsTr("Finished") : !row.modelData.started ? qsTr("New")
+                                              : win.percent(row.modelData.progress)
+                                        color: win.muted
+                                    }
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: shelfList.currentIndex = row.index
+                                    onDoubleClicked: backend.openFile(row.modelData.path)
+                                }
                             }
+                        }
+
+                        // A search or a filter with nothing in it.
+                        Label {
+                            anchors.centerIn: parent
+                            width: Math.min(parent.width - 48, 420)
+                            visible: win.shelf.length === 0
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.Wrap
+                            color: win.muted
+                            text: shelfSearch.text.trim() !== "" ? qsTr("No books match “%1”.").arg(shelfSearch.text.trim())
+                                                                 : qsTr("No books here yet.")
                         }
                     }
                 }
@@ -603,7 +816,7 @@ ApplicationWindow {
                     anchors.centerIn: parent
                     width: Math.min(parent.width - 48, 480)
                     spacing: 16
-                    visible: shelf.count === 0
+                    visible: backend.library.length === 0
 
                     Label {
                         Layout.fillWidth: true
@@ -616,7 +829,7 @@ ApplicationWindow {
                     Label {
                         Layout.fillWidth: true
                         horizontalAlignment: Text.AlignHCenter
-                        text: qsTr("Open a PDF, EPUB, comic, Markdown or text file, or drop one on the window.")
+                        text: qsTr("Open a PDF, EPUB, comic, Markdown or text file, or drop one on the window. Books put in ~/Books appear here by themselves.")
                         color: win.muted
                         wrapMode: Text.Wrap
                     }
@@ -1954,6 +2167,8 @@ ApplicationWindow {
                     { keys: "W", action: qsTr("Fit pages to the width or the window") },
                     { keys: "D", action: qsTr("One page or two side by side") },
                     { keys: "I", action: qsTr("Color pages like the theme") },
+                    { keys: "V  S  Tab  /", action: qsTr("Library: covers or a list, the order, which books, search") },
+                    { keys: "M", action: qsTr("Library: mark a book finished, or not") },
                     { keys: "B", action: qsTr("Bookmark the page, or remove its bookmark") },
                     { keys: "Tab  Enter", action: qsTr("Choose a link or note on the page, and open it") },
                     { keys: "Backspace  Shift+Backspace", action: qsTr("Back or forward after a jump") },

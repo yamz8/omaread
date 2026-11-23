@@ -81,6 +81,13 @@ public:
     // the endnotes. Progress and time left count only what is read.
     QList<int> words;
     QList<bool> reading;
+    // The book's cover, no taller than height: an EPUB's cover image, or a
+    // PDF's or comic's first page. Null for a book without one.
+    QImage cover(int height) const;
+    // A title from a file's name, for a book that names none itself:
+    // "the_night-ferry" reads "The Night Ferry".
+    static QString titleFromFileName(const QString &path);
+
     // The words read once the given place is reached, and all there are.
     qint64 wordsBefore(int section, double position) const;
     qint64 totalWords() const;
@@ -138,6 +145,8 @@ private:
     // Comic pages, as their encoded bytes, and an EPUB's images.
     QList<QByteArray> m_pages;
     QHash<QString, QByteArray> m_resources;
+    // An EPUB's cover image, by its path inside the archive.
+    QString m_coverPath;
     // Poppler isn't safe to use from two threads at once.
     mutable QMutex m_pdfMutex;
 };

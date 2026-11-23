@@ -1,8 +1,10 @@
 #include "backend.h"
 
 #include <QClipboard>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -13,8 +15,8 @@
 #include <QSaveFile>
 #include <QTextBlock>
 #include <QTextCursor>
-#include <QTextList>
 #include <QTextDocument>
+#include <QTextList>
 #include <QtConcurrent>
 
 #include <algorithm>
@@ -27,7 +29,11 @@
 namespace {
 
 // Enough to find any recent book again without the list becoming an archive.
-constexpr int maxLibrary = 60;
+constexpr int maxOpened = 500;
+// Covers are kept this tall: enough for the library's grid on any screen.
+constexpr int coverHeight = 480;
+// The files a watched folder's books are.
+const QStringList bookSuffixes = {"epub", "pdf", "cbz", "cbr", "cb7", "cbt", "md", "markdown", "txt"};
 
 QString defaultStateDirectory() {
     QString state = qEnvironmentVariable("XDG_STATE_HOME");
@@ -46,6 +52,17 @@ Backend::Backend(const QString &stateDirectory, FilePicker *picker, QObject *par
     : QObject(parent),
       m_stateFile((stateDirectory.isEmpty() ? defaultStateDirectory() : stateDirectory) + "/library.json"),
       m_picker(picker ? picker : new PortalFilePicker(this)) {
+    m_coverDirectory = stateDirectory.isEmpty()
+        ? (qEnvironmentVariable("XDG_CACHE_HOME").isEmpty() ? QDir::homePath() + "/.cache" : qEnvironmentVariable("XDG_CACHE_HOME"))
+              + "/omaread/covers"
+        : stateDirectory + "/covers";
+    // Books put in ~/Books join the library by themselves; tests choose their own.
+    if (stateDirectory.isEmpty())
+        m_folders = {QDir::homePath() + "/Books"};
+    m_scanTimer.setSingleShot(true);
+    m_scanTimer.setInterval(400);
+    connect(&m_scanTimer, &QTimer::timeout, this, &Backend::scanFolders);
+    connect(&m_watcher, &QFileSystemWatcher::directoryChanged, &m_scanTimer, qOverload<>(&QTimer::start));
     m_saveTimer.setSingleShot(true);
     m_saveTimer.setInterval(800);
     connect(&m_saveTimer, &QTimer::timeout, this, &Backend::save);
@@ -55,6 +72,11 @@ Backend::Backend(const QString &stateDirectory, FilePicker *picker, QObject *par
     connect(m_picker, &FilePicker::openSelected, this, &Backend::openUrl);
     connect(m_picker, &FilePicker::failed, this, [this](const QString &message) { setProblem(Problem::Picker, message); });
     readState();
+    // After the window has what it needs: the folders, then the covers.
+    QTimer::singleShot(0, this, [this] {
+        scanFolders();
+        fillCovers();
+    });
 }
 
 Backend::~Backend() {
@@ -86,12 +108,24 @@ void Backend::readState() {
     m_wordsPerMinute = std::clamp(state.value("wordsPerMinute").toDouble(defaultWordsPerMinute), 80.0, 900.0);
     if (const QString value = state.value("progressShows").toString(); progressModes().contains(value))
         m_progressShows = value;
+    if (const QString value = state.value("libraryView").toString(); value == "grid" || value == "list")
+        m_libraryView = value;
+    if (const QString value = state.value("librarySort").toString(); QStringList{"recent", "title", "author", "progress"}.contains(value))
+        m_librarySort = value;
+    if (const QString value = state.value("libraryFilter").toString(); QStringList{"all", "reading", "unread", "finished"}.contains(value))
+        m_libraryFilter = value;
+    if (state.contains("folders")) {
+        m_folders.clear();
+        for (const QJsonValue &folder : state.value("folders").toArray())
+            m_folders << folder.toString();
+    }
     for (const QJsonValue &value : state.value("books").toArray()) {
         const QJsonObject book = value.toObject();
         Entry entry{book.value("path").toString(), book.value("title").toString(), book.value("author").toString(),
                     book.value("kind").toString(), book.value("section").toInt(), book.value("sections").toInt(),
                     std::clamp(book.value("position").toDouble(), 0.0, 1.0), qint64(book.value("opened").toDouble()),
-                    book.value("progress").toDouble(-1), {}};
+                    book.value("progress").toDouble(-1), {},
+                    book.value("finished").toBool(), qint64(book.value("added").toDouble()), book.value("hidden").toBool()};
         for (const QJsonValue &mark : book.value("bookmarks").toArray()) {
             const QJsonObject m = mark.toObject();
             entry.bookmarks << Entry::Bookmark{m.value("section").toInt(),
@@ -111,7 +145,8 @@ void Backend::save() {
                                  {"author", entry.author},     {"kind", entry.kind},
                                  {"section", entry.section},   {"sections", entry.sections},
                                  {"position", entry.position}, {"opened", double(entry.opened)},
-                                 {"progress", entry.progress}, {"bookmarks", [&] {
+                                 {"progress", entry.progress}, {"finished", entry.finished},
+                                 {"added", double(entry.added)}, {"hidden", entry.hidden}, {"bookmarks", [&] {
                                       QJsonArray marks;
                                       for (const Entry::Bookmark &mark : entry.bookmarks)
                                           marks.append(QJsonObject{{"section", mark.section},
@@ -123,7 +158,9 @@ void Backend::save() {
         {"textScale", m_textScale}, {"tintPages", m_tintPages}, {"spread", m_spread}, {"transition", m_transition},
         {"typeface", m_typeface},   {"lineSpacing", m_lineSpacing}, {"columnWidth", m_columnWidth},
         {"justify", m_justify},     {"wordsPerMinute", m_wordsPerMinute},
-        {"progressShows", m_progressShows}, {"books", books}};
+        {"progressShows", m_progressShows}, {"folders", QJsonArray::fromStringList(m_folders)},
+        {"libraryView", m_libraryView}, {"librarySort", m_librarySort}, {"libraryFilter", m_libraryFilter},
+        {"books", books}};
     QDir().mkpath(QFileInfo(m_stateFile).path());
     // Atomic, so a crash mid-write never loses the whole library.
     QSaveFile file(m_stateFile);
@@ -141,6 +178,8 @@ void Backend::scheduleSave() {
 QVariantList Backend::library() const {
     QVariantList list;
     for (const Entry &entry : m_library) {
+        if (entry.hidden)
+            continue;
         const double progress =
             entry.progress >= 0 ? entry.progress
             : entry.sections <= 0 ? 0
@@ -148,12 +187,20 @@ QVariantList Backend::library() const {
                 ? double(entry.section + 1) / entry.sections
                 : (entry.section + entry.position) / entry.sections;
         list << QVariantMap{{"path", entry.path},
-                            {"title", entry.title.isEmpty() ? QFileInfo(entry.path).completeBaseName() : entry.title},
+                            // A title that is only the file's name, as older entries kept it, tidied.
+                            {"title", entry.title.isEmpty() || entry.title == QFileInfo(entry.path).completeBaseName()
+                                          ? Book::titleFromFileName(entry.path) : entry.title},
                             {"author", entry.author},
                             {"kind", entry.kind},
                             {"fileName", QFileInfo(entry.path).fileName()},
-                            {"progress", std::clamp(progress, 0.0, 1.0)},
-                            {"exists", QFileInfo::exists(entry.path)}};
+                            {"progress", entry.finished ? 1.0 : std::clamp(progress, 0.0, 1.0)},
+                            {"exists", QFileInfo::exists(entry.path)},
+                            {"finished", entry.finished},
+                            {"started", entry.opened > 0},
+                            // Most recently opened, or for one never opened, arrived.
+                            {"recent", double(entry.opened > 0 ? entry.opened : entry.added)},
+                            {"cover", QFileInfo::exists(coverFile(entry.path))
+                                          ? QUrl::fromLocalFile(coverFile(entry.path)).toString() : QString()}};
     }
     return list;
 }
@@ -381,6 +428,14 @@ void Backend::setTransition(const QString &transition) {
     scheduleSave();
 }
 
+void Backend::setChoice(QString *setting, const QString &value, const QStringList &choices) {
+    if (value == *setting || !choices.contains(value))
+        return;
+    *setting = value;
+    emit settingsChanged();
+    scheduleSave();
+}
+
 void Backend::setTypeface(const QString &typeface) {
     if (typeface == m_typeface || !typefaces().contains(typeface))
         return;
@@ -523,19 +578,28 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
     m_section = 0;
     m_position = 0;
     QList<Entry::Bookmark> bookmarks;
+    bool finished = false;
+    qint64 added = 0;
     const auto it = std::find_if(m_library.begin(), m_library.end(),
                                  [&](const Entry &entry) { return entry.path == m_book->path; });
     if (it != m_library.end()) {
         m_section = std::clamp(it->section, 0, m_book->sectionCount() - 1);
         m_position = it->position;
         bookmarks = it->bookmarks;
+        finished = it->finished;
+        added = it->added;
         m_library.erase(it);
     }
     m_library.prepend(Entry{m_book->path, m_book->title, m_book->author, m_book->kindName(), m_section,
                             m_book->sectionCount(), m_position, QDateTime::currentMSecsSinceEpoch(), progress(),
-                            bookmarks});
-    while (m_library.size() > maxLibrary)
-        m_library.removeLast();
+                            bookmarks, finished, added, false});
+    // Enough to find any recent book again without the list becoming an
+    // archive; books in a watched folder stay whatever their age.
+    int opened = 0;
+    for (qsizetype i = 0; i < m_library.size(); ++i)
+        if (m_library[i].opened > 0 && ++opened > maxOpened && m_library[i].added == 0)
+            m_library.removeAt(i--);
+    saveCover(m_book);
     scheduleSave();
 
     setTarget(-1);
@@ -555,6 +619,181 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
 void Backend::openRecent(int index) {
     if (index >= 0 && index < m_library.size())
         openFile(m_library[index].path);
+}
+
+void Backend::forgetPath(const QString &path) {
+    const auto it = std::find_if(m_library.begin(), m_library.end(), [&](const Entry &e) { return e.path == path; });
+    if (it == m_library.end())
+        return;
+    // A book in a watched folder would come straight back: it is hidden instead.
+    const bool watched = std::any_of(m_folders.begin(), m_folders.end(), [&](const QString &folder) {
+        return path.startsWith(QDir::cleanPath(folder) + '/');
+    });
+    if (watched && QFileInfo::exists(path))
+        *it = Entry{path, it->title, it->author, it->kind, 0, it->sections, 0, 0, -1, {}, false, it->added, true};
+    else
+        m_library.erase(it);
+    emit libraryChanged();
+    scheduleSave();
+}
+
+void Backend::setFinished(const QString &path, bool finished) {
+    for (Entry &entry : m_library)
+        if (entry.path == path && entry.finished != finished) {
+            entry.finished = finished;
+            emit libraryChanged();
+            scheduleSave();
+        }
+}
+
+QString Backend::coverFile(const QString &path) const {
+    const QFileInfo info(path);
+    // A changed file is a new cover.
+    const QByteArray key = path.toUtf8() + '|' + QByteArray::number(info.size()) + '|'
+                           + QByteArray::number(info.lastModified().toMSecsSinceEpoch());
+    return m_coverDirectory + '/' + QCryptographicHash::hash(key, QCryptographicHash::Sha1).toHex() + ".jpg";
+}
+
+void Backend::saveCover(const std::shared_ptr<Book> &book) {
+    const QString file = coverFile(book->path);
+    if (QFileInfo::exists(file))
+        return;
+    m_coverTried.insert(book->path);
+    auto *watcher = new QFutureWatcher<bool>(this);
+    connect(watcher, &QFutureWatcher<bool>::finished, this, [this, watcher] {
+        watcher->deleteLater();
+        if (watcher->result())
+            emit libraryChanged();
+    });
+    const QString directory = m_coverDirectory;
+    watcher->setFuture(QtConcurrent::run([book, file, directory] {
+        const QImage cover = book->cover(coverHeight);
+        if (cover.isNull())
+            return false;
+        QDir().mkpath(directory);
+        QSaveFile out(file);
+        out.setDirectWriteFallback(false);
+        return out.open(QIODevice::WriteOnly) && cover.convertToFormat(QImage::Format_RGB32).save(&out, "JPG", 85)
+               && out.commit();
+    }));
+}
+
+// One book at a time, in the background: a book listed without a cover is
+// read for it, and for its title and author when it was never opened.
+void Backend::fillCovers() {
+    if (m_coverBusy)
+        return;
+    const auto it = std::find_if(m_library.begin(), m_library.end(), [&](const Entry &entry) {
+        return !entry.hidden && !m_coverTried.contains(entry.path) && QFileInfo::exists(entry.path)
+               && !QFileInfo::exists(coverFile(entry.path));
+    });
+    if (it == m_library.end())
+        return;
+    const QString path = it->path, file = coverFile(path), directory = m_coverDirectory;
+    m_coverTried.insert(path);
+    m_coverBusy = true;
+    struct Found {
+        QString title, author, kind;
+        int sections = 0;
+        bool cover = false;
+    };
+    auto *watcher = new QFutureWatcher<Found>(this);
+    connect(watcher, &QFutureWatcher<Found>::finished, this, [this, watcher, path] {
+        watcher->deleteLater();
+        m_coverBusy = false;
+        const Found found = watcher->result();
+        for (Entry &entry : m_library)
+            if (entry.path == path && entry.opened == 0 && !found.title.isEmpty()) {
+                entry.title = found.title;
+                entry.author = found.author;
+                entry.kind = found.kind;
+                entry.sections = found.sections;
+                scheduleSave();
+            }
+        emit libraryChanged();
+        fillCovers();
+    });
+    watcher->setFuture(QtConcurrent::run([path, file, directory] {
+        Found found;
+        Book::Error error = Book::Error::None;
+        const auto book = Book::load(path, 0, &error);
+        if (!book)
+            return found;
+        found = {book->title, book->author, book->kindName(), book->sectionCount(), false};
+        const QImage cover = book->cover(coverHeight);
+        if (!cover.isNull()) {
+            QDir().mkpath(directory);
+            QSaveFile out(file);
+            out.setDirectWriteFallback(false);
+            found.cover = out.open(QIODevice::WriteOnly)
+                          && cover.convertToFormat(QImage::Format_RGB32).save(&out, "JPG", 85) && out.commit();
+        }
+        return found;
+    }));
+}
+
+void Backend::setFolders(const QStringList &folders) {
+    m_folders = folders;
+    scanFolders();
+    scheduleSave();
+}
+
+// The books in the watched folders: a new one joins the library, not yet
+// started, and one gone from there that was never opened leaves it.
+void Backend::scanFolders() {
+    if (!m_watcher.directories().isEmpty())
+        m_watcher.removePaths(m_watcher.directories());
+    QSet<QString> found;
+    QStringList watched;
+    for (const QString &folder : std::as_const(m_folders)) {
+        if (!QFileInfo(folder).isDir())
+            continue;
+        watched << folder;
+        QDirIterator it(folder, QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Readable,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext() && found.size() < 5000) {
+            const QFileInfo info = it.nextFileInfo();
+            if (info.isDir()) {
+                if (!info.fileName().startsWith('.'))
+                    watched << info.absoluteFilePath();
+                continue;
+            }
+            if (info.fileName().startsWith('.') || !bookSuffixes.contains(info.suffix().toLower()))
+                continue;
+            found.insert(info.absoluteFilePath());
+        }
+    }
+    if (!watched.isEmpty())
+        m_watcher.addPaths(watched);
+    bool changed = false;
+    QSet<QString> listed;
+    for (const Entry &entry : std::as_const(m_library))
+        listed.insert(entry.path);
+    for (const QString &path : std::as_const(found)) {
+        if (listed.contains(path))
+            continue;
+        const QFileInfo info(path);
+        const QString suffix = info.suffix().toLower();
+        const QString kind = suffix == "pdf" ? "pdf" : suffix == "epub" ? "epub"
+                           : suffix.startsWith("cb") ? "comic" : suffix == "txt" ? "text" : "markdown";
+        m_library << Entry{path, Book::titleFromFileName(path), {}, kind, 0, 0, 0, 0, -1, {}, false,
+                           info.birthTime().isValid() ? info.birthTime().toMSecsSinceEpoch()
+                                                      : info.lastModified().toMSecsSinceEpoch(), false};
+        changed = true;
+    }
+    const qsizetype before = m_library.size();
+    m_library.removeIf([&](const Entry &entry) {
+        const bool inFolder = std::any_of(m_folders.begin(), m_folders.end(), [&](const QString &folder) {
+            return entry.path.startsWith(QDir::cleanPath(folder) + '/');
+        });
+        return inFolder && entry.opened == 0 && !found.contains(entry.path);
+    });
+    changed = changed || m_library.size() != before;
+    if (changed) {
+        emit libraryChanged();
+        scheduleSave();
+        fillCovers();
+    }
 }
 
 void Backend::forget(int index) {
@@ -742,6 +981,12 @@ void Backend::remember() {
     m_library.first().section = m_section;
     m_library.first().position = m_position;
     m_library.first().progress = progress();
+    // The end of the book's text: it's read.
+    if (!m_library.first().finished && m_library.first().progress >= 0.995) {
+        m_library.first().finished = true;
+        emit bookFinished();
+        emit libraryChanged();
+    }
     scheduleSave();
 }
 

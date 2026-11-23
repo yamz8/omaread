@@ -229,7 +229,7 @@ std::shared_ptr<Book> Book::load(const QString &path, int id, Error *error, cons
     std::shared_ptr<Book> book(new Book);
     book->id = id;
     book->path = info.absoluteFilePath();
-    book->title = info.completeBaseName();
+    book->title = titleFromFileName(path);
 
     const QString suffix = info.suffix().toLower();
     const bool zip = head.startsWith("PK\x03\x04");
@@ -279,6 +279,34 @@ std::shared_ptr<Book> Book::load(const QString &path, int id, Error *error, cons
             book->reading.fill(true);
     }
     return book;
+}
+
+QImage Book::cover(int height) const {
+    QImage image;
+    switch (kind) {
+    case Kind::Epub: image = resource(m_coverPath); break;
+    case Kind::Pdf:
+    case Kind::Comic: image = renderPage(0, QSize(height * 2, height)); break;
+    default: break;
+    }
+    if (!image.isNull() && image.height() > height)
+        image = image.scaledToHeight(height, Qt::SmoothTransformation);
+    return image;
+}
+
+QString Book::titleFromFileName(const QString &path) {
+    QString name = QFileInfo(path).completeBaseName();
+    name.replace('_', ' ').replace(QRegularExpression("(?<=\\S)-(?=\\S)"), " ");
+    name = name.simplified();
+    // All in lower case, as file names often are: each word capitalized.
+    if (name == name.toLower()) {
+        QStringList words = name.split(' ');
+        for (QString &word : words)
+            if (!word.isEmpty())
+                word[0] = word[0].toUpper();
+        name = words.join(' ');
+    }
+    return name.isEmpty() ? QFileInfo(path).fileName() : name;
 }
 
 qint64 Book::wordsBefore(int section, double position) const {
@@ -374,7 +402,7 @@ bool Book::loadEpub(Error *error) {
     };
     QHash<QString, Item> manifest;
     QStringList spine;
-    QString ncxId;
+    QString ncxId, coverId;
     QXmlStreamReader opf(xmlEntities(files.value(opfPath)));
     while (!opf.atEnd()) {
         if (opf.readNext() != QXmlStreamReader::StartElement)
@@ -383,8 +411,10 @@ bool Book::loadEpub(Error *error) {
         const auto attributes = opf.attributes();
         if (name == u"title" && opf.namespaceUri().contains(u"purl.org/dc")) {
             const QString text = opf.readElementText(QXmlStreamReader::IncludeChildElements).simplified();
-            if (!text.isEmpty() && title == QFileInfo(path).completeBaseName())
+            if (!text.isEmpty() && title == titleFromFileName(path))
                 title = text;
+        } else if (name == u"meta" && attributes.value("name") == u"cover") {
+            coverId = attributes.value("content").toString();
         } else if (name == u"creator" && author.isEmpty()) {
             author = opf.readElementText(QXmlStreamReader::IncludeChildElements).simplified();
         } else if (name == u"item") {
@@ -399,6 +429,17 @@ bool Book::loadEpub(Error *error) {
                 spine << item.path;
         }
     }
+    // The cover: EPUB 3 marks it, EPUB 2 names it in a meta, and some books
+    // only call the file so.
+    for (auto it = manifest.cbegin(); it != manifest.cend() && m_coverPath.isEmpty(); ++it)
+        if (it->properties.split(' ').contains("cover-image") && files.contains(it->path))
+            m_coverPath = it->path;
+    if (m_coverPath.isEmpty() && manifest.contains(coverId) && files.contains(manifest.value(coverId).path))
+        m_coverPath = manifest.value(coverId).path;
+    for (auto it = manifest.cbegin(); it != manifest.cend() && m_coverPath.isEmpty(); ++it)
+        if (it->type.startsWith("image/") && QFileInfo(it->path).completeBaseName().toLower().contains("cover")
+            && files.contains(it->path))
+            m_coverPath = it->path;
 
     // The images chapters show stay in the book, drawn by the provider on demand.
     QHash<QString, QSize> imageSizes;

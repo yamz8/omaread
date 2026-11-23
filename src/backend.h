@@ -1,9 +1,11 @@
 #pragma once
 
 #include <QColor>
+#include <QFileSystemWatcher>
 #include <QFutureWatcher>
 #include <QObject>
 #include <QRectF>
+#include <QSet>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
@@ -101,6 +103,12 @@ class Backend : public QObject {
     // What the footer's right side shows: "chapter" or "book" time left,
     // "page", "percent", or "none". P steps through them.
     Q_PROPERTY(QString progressShows READ progressShows WRITE setProgressShows NOTIFY settingsChanged)
+    // How the library shows its books: "grid" of covers or "list"; in
+    // "recent", "title", "author" or "progress" order; and "all", "reading",
+    // "unread" or "finished" ones.
+    Q_PROPERTY(QString libraryView READ libraryView WRITE setLibraryView NOTIFY settingsChanged)
+    Q_PROPERTY(QString librarySort READ librarySort WRITE setLibrarySort NOTIFY settingsChanged)
+    Q_PROPERTY(QString libraryFilter READ libraryFilter WRITE setLibraryFilter NOTIFY settingsChanged)
     // How a flowing book's text is set, for every book: "serif" or "sans";
     // "compact", "normal" or "relaxed" lines; a "narrow", "medium" or "wide"
     // column; and ragged or justified lines.
@@ -190,6 +198,14 @@ public:
     void setProgressShows(const QString &shows);
     static QStringList progressModes() { return {"chapter", "book", "page", "percent", "none"}; }
     static constexpr double defaultWordsPerMinute = 250;
+    QString libraryView() const { return m_libraryView; }
+    void setLibraryView(const QString &view) { setChoice(&m_libraryView, view, {"grid", "list"}); }
+    QString librarySort() const { return m_librarySort; }
+    void setLibrarySort(const QString &sort) { setChoice(&m_librarySort, sort, {"recent", "title", "author", "progress"}); }
+    QString libraryFilter() const { return m_libraryFilter; }
+    void setLibraryFilter(const QString &filter) {
+        setChoice(&m_libraryFilter, filter, {"all", "reading", "unread", "finished"});
+    }
     QString typeface() const { return m_typeface; }
     void setTypeface(const QString &typeface);
     QString lineSpacing() const { return m_lineSpacing; }
@@ -205,6 +221,13 @@ public:
     Q_INVOKABLE void openUrl(const QUrl &url);
     Q_INVOKABLE void openFile(const QString &path, const QString &password = {});
     Q_INVOKABLE void openRecent(int index);
+    // Forgets a book by its path, as the library lists it.
+    Q_INVOKABLE void forgetPath(const QString &path);
+    // Marks a book read to the end, or not.
+    Q_INVOKABLE void setFinished(const QString &path, bool finished);
+    // The folders whose books join the library by themselves: ~/Books.
+    QStringList folders() const { return m_folders; }
+    void setFolders(const QStringList &folders);
     Q_INVOKABLE void forget(int index);
     Q_INVOKABLE void pickFile();
     Q_INVOKABLE void close();
@@ -287,6 +310,8 @@ signals:
     void pagesChanged();
     void historyChanged();
     void bookmarksChanged();
+    // The book open was just read to its end.
+    void bookFinished();
     void targetChanged();
     void searchChanged();
     void hitChanged();
@@ -309,6 +334,11 @@ private:
             QString text;
         };
         QList<Bookmark> bookmarks;
+        bool finished = false;
+        // When a book found in a watched folder arrived there; 0 for one opened.
+        qint64 added = 0;
+        // Forgotten, though its file stays in a watched folder.
+        bool hidden = false;
     };
     struct Loaded {
         std::shared_ptr<Book> book;
@@ -347,6 +377,18 @@ private:
         double position = 0;
     };
     QList<Place> m_back, m_forward;
+    // Covers, as small images in a cache, and the book whose cover is being made.
+    QString m_coverDirectory;
+    QSet<QString> m_coverTried;
+    bool m_coverBusy = false;
+    QString coverFile(const QString &path) const;
+    void fillCovers();
+    void saveCover(const std::shared_ptr<Book> &book);
+    // Watched folders.
+    QStringList m_folders;
+    QFileSystemWatcher m_watcher;
+    QTimer m_scanTimer;
+    void scanFolders();
     Entry *openEntry();
     Layout::Page m_page;
     QList<Layout::Pages> m_pages;
@@ -371,6 +413,8 @@ private:
     // A book reads best in a serif, as printed books are set.
     double m_wordsPerMinute = defaultWordsPerMinute;
     QString m_progressShows = "chapter";
+    QString m_libraryView = "grid", m_librarySort = "recent", m_libraryFilter = "all";
+    void setChoice(QString *setting, const QString &value, const QStringList &choices);
     QString m_typeface = "serif";
     QString m_lineSpacing = "normal";
     QString m_columnWidth = "medium";

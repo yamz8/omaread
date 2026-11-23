@@ -8,6 +8,8 @@ Omaread is for reading books from start to finish. EPUBs flow in the theme's col
 
 The footer names the part and chapter you're in, and tells the time left in the chapter at your own reading pace, which it learns as you read; `P` switches it to the time left in the book, the page, or the percent read. Pages are counted as Space turns them, at the window's size and the reading settings, so a book's page count follows them. Progress counts only the book's text, by its words, so title pages, the imprint and the endnotes don't move it.
 
+The library shows your books as covers (`V` switches to a list), most recent first; `S` changes the order to title, author or progress, `Tab` shows only the books you're reading, haven't started or have finished, and `/` searches titles and authors. A book is marked finished when you reach its end, and `M` marks one by hand. Books you put in `~/Books` join the library by themselves. Covers are kept small in `~/.cache/omaread/covers`.
+
 The library remembers every book you've opened and where you stopped reading, so the next time a book opens, it opens at that place. The library lives in `~/.local/state/omaread/library.json`. Omaread never changes the files it reads.
 
 Open a book from the library, with `O`, by dropping it on the window, or from the command line:
@@ -57,6 +59,8 @@ omaread skill install               # teach coding agents to use these commands
 | `F` | Full screen |
 | `Esc` | Back to the library |
 | `Enter` `Delete` | Open or forget a book in the library |
+| `V` `S` `Tab` `/` | In the library: covers or a list, the order, which books, search |
+| `M` | In the library: mark a book finished, or not |
 | `?` | Show or hide the shortcuts |
 | `Q` | Quit |
 

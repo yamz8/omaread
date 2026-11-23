@@ -51,6 +51,7 @@
         <file alias="i18n/vi.json">i18n/vi.json</file>
         <file alias="i18n/zh-CN.json">i18n/zh-CN.json</file>
         <file alias="i18n/zh-TW.json">i18n/zh-TW.json</file>
+        <file alias="BookCover.qml">BookCover.qml</file>
         <file alias="BookPage.qml">BookPage.qml</file>
         <file alias="omaread.svg">../share/omaread.svg</file>
         <file alias="skill.md">skill.md</file>

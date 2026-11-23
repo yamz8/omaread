@@ -837,6 +837,69 @@ private slots:
         QVERIFY(again.bookmarks().isEmpty());
     }
 
+    void backendWatchesAFolder() {
+        QTemporaryDir state, books;
+        FakePicker picker;
+        writeText(books.filePath("first-book.md"), "# First Book\nText.\n");
+        QDir(books.path()).mkpath("shelf");
+        writeText(books.filePath("shelf/second_book.txt"), "Plain text.\n");
+        writeText(books.filePath("notes.doc"), "Not a book.\n");
+        Backend backend(state.path(), &picker);
+        QVERIFY(backend.library().isEmpty());
+        backend.setFolders({books.path()});
+        // The books there join the library, not yet started, under tidy titles.
+        QCOMPARE(backend.library().size(), 2);
+        const auto titles = [&] {
+            QStringList out;
+            for (const QVariant &book : backend.library())
+                out << book.toMap().value("title").toString();
+            out.sort();
+            return out;
+        };
+        QCOMPARE(titles(), QStringList({"First Book", "Second Book"}));
+        QVERIFY(!backend.library()[0].toMap().value("started").toBool());
+        // One put there later arrives by itself.
+        writeText(books.filePath("third.md"), "# Third\nMore.\n");
+        QTRY_COMPARE(backend.library().size(), 3);
+        // One taken away that was never opened leaves.
+        QFile::remove(books.filePath("shelf/second_book.txt"));
+        QTRY_COMPARE(backend.library().size(), 2);
+        // Forgotten, it stays away, until it's opened again.
+        backend.forgetPath(books.filePath("third.md"));
+        QCOMPARE(backend.library().size(), 1);
+        writeText(books.filePath("another.md"), "# Another\n");
+        QTRY_COMPARE(backend.library().size(), 2);
+        QVERIFY(!titles().contains("Third"));
+        backend.openFile(books.filePath("third.md"));
+        QTRY_VERIFY(backend.isOpen());
+        QCOMPARE(backend.library().size(), 3);
+    }
+
+    void backendKeepsCoversAndFinishedBooks() {
+        QTemporaryDir state, files;
+        FakePicker picker;
+        Backend backend(state.path(), &picker);
+        // A PDF's cover is its first page, kept in the cache.
+        backend.openFile(writePdf(files.path(), 2));
+        QTRY_VERIFY(backend.isOpen());
+        QTRY_VERIFY(!backend.library()[0].toMap().value("cover").toString().isEmpty());
+        QVERIFY(QFileInfo::exists(QUrl(backend.library()[0].toMap().value("cover").toString()).toLocalFile()));
+        // Read to the end, a book is finished, and says so once.
+        QSignalSpy finished(&backend, &Backend::bookFinished);
+        backend.openFile(writeText(files.filePath("short.md"), "# Short\nOne.\n## End\nTwo.\n"));
+        QTRY_VERIFY(backend.isOpen());
+        QVERIFY(!backend.library()[0].toMap().value("finished").toBool());
+        backend.goTo(1, 1);
+        QCOMPARE(finished.count(), 1);
+        QVERIFY(backend.library()[0].toMap().value("finished").toBool());
+        QCOMPARE(backend.library()[0].toMap().value("progress").toDouble(), 1.0);
+        backend.setPosition(0.5);
+        QCOMPARE(finished.count(), 1);
+        // And can be marked otherwise.
+        backend.setFinished(backend.library()[0].toMap().value("path").toString(), false);
+        QVERIFY(!backend.library()[0].toMap().value("finished").toBool());
+    }
+
     void backendRemembersHowTextIsSet() {
         QTemporaryDir state;
         FakePicker picker;
@@ -1685,8 +1748,29 @@ private slots:
         QVERIFY(!backend.isOpen());
         auto *shelf = item(window->contentItem(), "shelf");
         QTRY_COMPARE(shelf->property("count").toInt(), 3);
-        QTest::keyClick(window, Qt::Key_Down);
-        QTest::keyClick(window, Qt::Key_Down);
+        // The covers go left to right; Right twice is the third book.
+        QTest::keyClick(window, Qt::Key_Right);
+        QTest::keyClick(window, Qt::Key_Right);
+        QCOMPARE(shelf->property("currentIndex").toInt(), 2);
+        // V shows a list, S another order, Tab other books, / a search.
+        QTest::keyClick(window, Qt::Key_V);
+        QCOMPARE(backend.libraryView(), QString("list"));
+        QTest::keyClick(window, Qt::Key_S);
+        QCOMPARE(backend.librarySort(), QString("title"));
+        QTest::keyClick(window, Qt::Key_Tab);
+        QCOMPARE(backend.libraryFilter(), QString("reading"));
+        // Shift+Tab, as a keyboard sends it.
+        QTest::keyClick(window, Qt::Key_Backtab, Qt::ShiftModifier);
+        QCOMPARE(backend.libraryFilter(), QString("all"));
+        QTest::keyClick(window, Qt::Key_Slash);
+        auto *shelfSearch = item(window->contentItem(), "shelfSearch");
+        QTRY_VERIFY(shelfSearch->hasActiveFocus());
+        // Typed into the search, a letter is a letter, not a key's action.
+        typeInto(window, "long");
+        auto *shelfList = item(window->contentItem(), "shelfList");
+        QTRY_COMPARE(shelfList->property("count").toInt(), 1);
+        QVERIFY(backend.libraryView() == "list");
+        // Enter opens the one found.
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_VERIFY(backend.isOpen());
         QCOMPARE(backend.kind(), QString("markdown"));
