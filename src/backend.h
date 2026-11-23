@@ -91,6 +91,9 @@ class Backend : public QObject {
     // The book's pages at the window's size and the reading settings, as Space
     // turns them; 0 while they are being counted, and for a PDF or comic.
     Q_PROPERTY(int pageCount READ pageCount NOTIFY pagesChanged)
+    // Whether the open book is read from right to left, as manga are: pages
+    // side by side start on the right, and the arrows turn the other way.
+    Q_PROPERTY(bool rightToLeft READ rightToLeft WRITE setRightToLeft NOTIFY bookChanged)
     // The open book's bookmarks, in reading order, each {section, position,
     // text, chapter}: the place, the first words there, and its chapter.
     Q_PROPERTY(QVariantList bookmarks READ bookmarks NOTIFY bookmarksChanged)
@@ -189,6 +192,8 @@ public:
     QString chapterLabel() const;
     int pageCount() const;
     QVariantList bookmarks() const;
+    bool rightToLeft() const;
+    void setRightToLeft(bool rightToLeft);
     QVariantList highlights() const;
     bool canGoBack() const { return !m_back.isEmpty(); }
     bool canGoForward() const { return !m_forward.isEmpty(); }
@@ -363,6 +368,8 @@ private:
         QList<Bookmark> bookmarks;
         QList<Highlight> highlights;
         bool finished = false;
+        // Read right to left: the book's own say, until the reader changes it.
+        int rightToLeft = -1;
         // When a book found in a watched folder arrived there; 0 for one opened.
         qint64 added = 0;
         // Forgotten, though its file stays in a watched folder.

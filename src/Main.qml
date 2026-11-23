@@ -71,6 +71,12 @@ ApplicationWindow {
     property string toast: ""
 
     readonly property int step: backend.paged && backend.spread ? 2 : 1
+    // A paged book read right to left, as manga are: pages side by side and
+    // page turns go the other way.
+    readonly property bool bookRightToLeft: backend.paged && backend.rightToLeft
+    // Which way a turn moves across the screen: forward is leftward, unless
+    // the book reads the other way.
+    readonly property int turnSide: turnDirection * (bookRightToLeft ? -1 : 1)
     readonly property var shownPages: !backend.paged ? []
         : backend.spread && backend.section + 1 < backend.sectionCount ? [backend.section, backend.section + 1]
         : [backend.section]
@@ -558,8 +564,19 @@ ApplicationWindow {
     Shortcut { sequence: "Escape"; enabled: !win.busy; onActivated: win.leave() }
     Shortcut { sequences: [StandardKey.Copy]; enabled: backend.open; onActivated: win.copy() }
 
-    Shortcut { sequences: ["Space", "PgDown", "Right"]; enabled: win.reading; onActivated: win.forward() }
-    Shortcut { sequences: ["Shift+Space", "PgUp", "Left"]; enabled: win.reading; onActivated: win.backward() }
+    Shortcut { sequences: ["Space", "PgDown"]; enabled: win.reading; onActivated: win.forward() }
+    Shortcut { sequences: ["Shift+Space", "PgUp"]; enabled: win.reading; onActivated: win.backward() }
+    // The arrows turn the way the book reads: a manga's next page is to the left.
+    Shortcut { sequence: "Right"; enabled: win.reading; onActivated: win.bookRightToLeft ? win.backward() : win.forward() }
+    Shortcut { sequence: "Left"; enabled: win.reading; onActivated: win.bookRightToLeft ? win.forward() : win.backward() }
+    Shortcut {
+        sequence: "R"
+        enabled: win.reading && backend.paged
+        onActivated: {
+            backend.rightToLeft = !backend.rightToLeft
+            win.say(backend.rightToLeft ? qsTr("Read right to left") : qsTr("Read left to right"))
+        }
+    }
     Shortcut { sequences: ["Down", "J"]; enabled: win.reading; onActivated: win.scroll(60) }
     Shortcut { sequences: ["Up", "K"]; enabled: win.reading; onActivated: win.scroll(-60) }
     Shortcut { sequence: "]"; enabled: win.reading; onActivated: win.jump(backend.section + win.step, 0) }
@@ -946,8 +963,8 @@ ApplicationWindow {
                                 angle: win.turnKind === "flip" && win.turnDirection < 0 ? -90 * (1 - win.turnProgress) : 0
                             },
                             Translate {
-                                x: win.turnKind === "slide" ? win.turnDirection * stage.width * (1 - win.turnProgress)
-                                 : win.turnKind === "cover" && win.turnDirection > 0 ? stage.width * (1 - win.turnProgress) : 0
+                                x: win.turnKind === "slide" ? win.turnSide * stage.width * (1 - win.turnProgress)
+                                 : win.turnKind === "cover" && win.turnDirection > 0 ? win.turnSide * stage.width * (1 - win.turnProgress) : 0
                             }
                         ]
 
@@ -1020,6 +1037,8 @@ ApplicationWindow {
                                                                             : Math.min(view.height - 2 * margin, available / aspects)
                                 readonly property real pageHeight: Math.max(48, fitted * win.zoom)
                                 LayoutMirroring.enabled: false
+                                // A manga's spread starts on the right.
+                                layoutDirection: win.bookRightToLeft ? Qt.RightToLeft : Qt.LeftToRight
                                 visible: backend.paged
                                 x: Math.max(margin, (view.width - width) / 2)
                                 y: margin
@@ -1178,8 +1197,8 @@ ApplicationWindow {
                         width: stage.width
                         height: stage.height
                         x: win.turnKind === "" ? -width - 64
-                         : win.turnKind === "slide" ? -win.turnDirection * width * win.turnProgress
-                         : win.turnKind === "cover" && win.turnDirection < 0 ? width * win.turnProgress : 0
+                         : win.turnKind === "slide" ? -win.turnSide * width * win.turnProgress
+                         : win.turnKind === "cover" && win.turnDirection < 0 ? -win.turnSide * width * win.turnProgress : 0
                         z: stage.front ? 0 : 1
                         textureSize: Qt.size(Math.ceil(width * Screen.devicePixelRatio), Math.ceil(height * Screen.devicePixelRatio))
                         opacity: win.turnKind === "fade" ? Math.max(0, 1 - 2 * win.turnProgress) : 1
@@ -2609,6 +2628,7 @@ ApplicationWindow {
                     { keys: "N  Shift+N", action: qsTr("Next or previous match") },
                     { keys: "Ctrl+C", action: qsTr("Copy the selected words") },
                     { keys: "+  −  0", action: qsTr("Larger, smaller, or reset text and pages") },
+                    { keys: "R", action: qsTr("Read a comic or PDF right to left, as manga, or left to right") },
                     { keys: "W", action: qsTr("Fit pages to the width or the window") },
                     { keys: "D", action: qsTr("One page or two side by side") },
                     { keys: "I", action: qsTr("Color pages like the theme") },

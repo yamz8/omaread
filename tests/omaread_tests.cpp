@@ -977,6 +977,36 @@ private slots:
             qputenv("XDG_STATE_HOME", before);
     }
 
+    void comicsSayHowTheyAreRead() {
+        QTemporaryDir state, files;
+        const QString path = files.filePath("night_ferry_02.cbz");
+        QVERIFY(writeZip(path, {{"ComicInfo.xml", "<?xml version=\"1.0\"?><ComicInfo><Series>The Night Ferry</Series>"
+                                                  "<Number>2</Number><Title>Lights</Title><Writer>Mira Sato</Writer>"
+                                                  "<Manga>YesAndRightToLeft</Manga></ComicInfo>"},
+                                {"001.png", png(20, 30)}, {"002.png", png(20, 30)}, {"003.png", png(20, 30)}}));
+        Book::Error error;
+        const auto book = Book::load(path, 1, &error);
+        QVERIFY(book);
+        QCOMPARE(book->title, QString("The Night Ferry 2: Lights"));
+        QCOMPARE(book->author, QString("Mira Sato"));
+        QVERIFY(book->rightToLeft);
+        QCOMPARE(book->sectionCount(), 3);
+        // The reader can say otherwise, and it's kept with the book.
+        FakePicker picker;
+        {
+            Backend backend(state.path(), &picker);
+            backend.openFile(path);
+            QTRY_VERIFY(backend.isOpen());
+            QVERIFY(backend.rightToLeft());
+            backend.setRightToLeft(false);
+            backend.save();
+        }
+        Backend again(state.path(), &picker);
+        again.openFile(path);
+        QTRY_VERIFY(again.isOpen());
+        QVERIFY(!again.rightToLeft());
+    }
+
     void backendRemembersHowTextIsSet() {
         QTemporaryDir state;
         FakePicker picker;

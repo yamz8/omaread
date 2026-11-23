@@ -87,6 +87,9 @@ public:
     // An EPUB's footnotes and endnotes, as HTML like a section's, by
     // "<section>#<id>": where a link to one points.
     QHash<QString, QString> notes;
+    // Read from right to left, as manga are: a comic says so in its
+    // ComicInfo.xml, an EPUB in its spine.
+    bool rightToLeft = false;
     // How many words each flowing section holds, and whether it is the book's
     // text to read, rather than a title page, the imprint, the contents or
     // the endnotes. Progress and time left count only what is read.

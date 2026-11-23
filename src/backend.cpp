@@ -127,7 +127,8 @@ void Backend::readState() {
                     book.value("kind").toString(), book.value("section").toInt(), book.value("sections").toInt(),
                     std::clamp(book.value("position").toDouble(), 0.0, 1.0), qint64(book.value("opened").toDouble()),
                     book.value("progress").toDouble(-1), {}, {},
-                    book.value("finished").toBool(), qint64(book.value("added").toDouble()), book.value("hidden").toBool()};
+                    book.value("finished").toBool(), book.value("rightToLeft").toInt(-1),
+                    qint64(book.value("added").toDouble()), book.value("hidden").toBool()};
         for (const QJsonValue &mark : book.value("highlights").toArray()) {
             const QJsonObject m = mark.toObject();
             Highlight h{m.value("section").toInt(), m.value("start").toInt(), m.value("end").toInt(),
@@ -158,6 +159,7 @@ void Backend::save() {
                                  {"position", entry.position}, {"opened", double(entry.opened)},
                                  {"progress", entry.progress}, {"finished", entry.finished},
                                  {"added", double(entry.added)}, {"hidden", entry.hidden},
+                                 {"rightToLeft", entry.rightToLeft},
                                  {"highlights", [&] {
                                       QJsonArray marks;
                                       for (const Highlight &h : entry.highlights)
@@ -579,6 +581,7 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
     QList<Entry::Bookmark> bookmarks;
     QList<Highlight> highlights;
     bool finished = false;
+    int rightToLeft = -1;
     qint64 added = 0;
     const auto it = std::find_if(m_library.begin(), m_library.end(),
                                  [&](const Entry &entry) { return entry.path == m_book->path; });
@@ -588,12 +591,13 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
         bookmarks = it->bookmarks;
         highlights = it->highlights;
         finished = it->finished;
+        rightToLeft = it->rightToLeft;
         added = it->added;
         m_library.erase(it);
     }
     m_library.prepend(Entry{m_book->path, m_book->title, m_book->author, m_book->kindName(), m_section,
                             m_book->sectionCount(), m_position, QDateTime::currentMSecsSinceEpoch(), progress(),
-                            bookmarks, highlights, finished, added, false});
+                            bookmarks, highlights, finished, rightToLeft, added, false});
     // Enough to find any recent book again without the list becoming an
     // archive; books in a watched folder stay whatever their age.
     int opened = 0;
@@ -632,7 +636,7 @@ void Backend::forgetPath(const QString &path) {
         return path.startsWith(QDir::cleanPath(folder) + '/');
     });
     if (watched && QFileInfo::exists(path))
-        *it = Entry{path, it->title, it->author, it->kind, 0, it->sections, 0, 0, -1, {}, {}, false, it->added, true};
+        *it = Entry{path, it->title, it->author, it->kind, 0, it->sections, 0, 0, -1, {}, {}, false, -1, it->added, true};
     else
         m_library.erase(it);
     emit libraryChanged();
@@ -778,7 +782,7 @@ void Backend::scanFolders() {
         const QString suffix = info.suffix().toLower();
         const QString kind = suffix == "pdf" ? "pdf" : suffix == "epub" ? "epub"
                            : suffix.startsWith("cb") ? "comic" : suffix == "txt" ? "text" : "markdown";
-        m_library << Entry{path, Book::titleFromFileName(path), {}, kind, 0, 0, 0, 0, -1, {}, {}, false,
+        m_library << Entry{path, Book::titleFromFileName(path), {}, kind, 0, 0, 0, 0, -1, {}, {}, false, -1,
                            info.birthTime().isValid() ? info.birthTime().toMSecsSinceEpoch()
                                                       : info.lastModified().toMSecsSinceEpoch(), false};
         changed = true;
@@ -889,6 +893,23 @@ QVariantList Backend::bookmarks() const {
         list << QVariantMap{{"section", mark.section}, {"position", mark.position},
                             {"text", mark.text},       {"chapter", chapterLabelFor(mark.section)}};
     return list;
+}
+
+bool Backend::rightToLeft() const {
+    if (!m_book)
+        return false;
+    if (!m_library.isEmpty() && m_library.first().path == m_book->path && m_library.first().rightToLeft >= 0)
+        return m_library.first().rightToLeft == 1;
+    return m_book->rightToLeft;
+}
+
+void Backend::setRightToLeft(bool rightToLeft) {
+    Entry *entry = openEntry();
+    if (!entry || rightToLeft == this->rightToLeft())
+        return;
+    entry->rightToLeft = rightToLeft ? 1 : 0;
+    emit bookChanged();
+    scheduleSave();
 }
 
 QVariantList Backend::highlights() const {

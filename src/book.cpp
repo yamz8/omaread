@@ -469,6 +469,7 @@ bool Book::loadEpub(Error *error) {
                              attributes.value("media-type").toString(), attributes.value("properties").toString()});
         } else if (name == u"spine") {
             ncxId = attributes.value("toc").toString();
+            rightToLeft = attributes.value("page-progression-direction") == u"rtl";
         } else if (name == u"itemref") {
             const Item item = manifest.value(attributes.value("idref").toString());
             if (!item.path.isEmpty() && files.contains(item.path))
@@ -704,6 +705,34 @@ bool Book::loadComic(Error *error) {
     QList<Entry> entries;
     if (!readArchive(path, &entries, error))
         return false;
+    // ComicInfo.xml, as comic readers and taggers write it: the series and
+    // number, the writer, and whether it's a manga read right to left.
+    for (const Entry &entry : std::as_const(entries)) {
+        if (QFileInfo(entry.name).fileName().compare("ComicInfo.xml", Qt::CaseInsensitive) != 0)
+            continue;
+        QXmlStreamReader xml(entry.data);
+        QString series, number, name;
+        while (!xml.atEnd()) {
+            if (xml.readNext() != QXmlStreamReader::StartElement)
+                continue;
+            const auto element = xml.name();
+            if (element == u"Series")
+                series = xml.readElementText().simplified();
+            else if (element == u"Number")
+                number = xml.readElementText().simplified();
+            else if (element == u"Title")
+                name = xml.readElementText().simplified();
+            else if (element == u"Writer" && author.isEmpty())
+                author = xml.readElementText().simplified();
+            else if (element == u"Manga")
+                rightToLeft = xml.readElementText().simplified() == u"YesAndRightToLeft";
+        }
+        if (!series.isEmpty())
+            title = series + (number.isEmpty() ? QString() : " " + number) + (name.isEmpty() ? QString() : ": " + name);
+        else if (!name.isEmpty())
+            title = name;
+        break;
+    }
     entries.removeIf([](const Entry &entry) {
         const QString name = QFileInfo(entry.name).fileName();
         return !isImageName(entry.name) || name.startsWith('.') || entry.name.startsWith("__MACOSX/");
