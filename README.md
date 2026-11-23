@@ -39,7 +39,7 @@ omaread skill install               # teach coding agents to use these commands
 | `↓` `↑` `J` `K` | Scroll |
 | `]` `[` | Next or previous section |
 | `Home` `End` | First or last section |
-| `G` | Go to a page or section |
+| `G` | Skim the book: `←` `→` a page, `Shift+←` `Shift+→` a chapter, a typed number, `Enter` to go, `Esc` to stay |
 | `Tab` `Shift+Tab` `Enter` | Choose a link or note on the page, and open it |
 | `Backspace` `Shift+Backspace` | Back to where a jump left, and on again |
 | `T` | Contents, with page numbers, and bookmarks (`Tab` switches) |

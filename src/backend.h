@@ -252,6 +252,12 @@ public:
     // The page at a scroll offset in a section, counting from the book's
     // first, or 0 while the pages are still being counted.
     Q_INVOKABLE int pageAt(int section, double contentY) const;
+    // What a page holds, for skimming: {section, position, chapter, text},
+    // its first words. Pages count from 1; a book whose pages are still being
+    // counted, and a PDF or comic, number its sections instead.
+    Q_INVOKABLE QVariantMap pagePreview(int page) const;
+    // Goes to a page, leaving a place to come back to.
+    Q_INVOKABLE void goToPage(int page);
     // Puts a chapter's images into its document as it arrives. Left to the
     // TextEdit, an image it hasn't drawn before loads late and is never shown.
     Q_INVOKABLE void loadImages(QQuickTextDocument *document);
@@ -343,7 +349,7 @@ private:
     QList<Place> m_back, m_forward;
     Entry *openEntry();
     Layout::Page m_page;
-    QList<QList<double>> m_pages;
+    QList<Layout::Pages> m_pages;
     QList<int> m_pagesBefore;
     QTimer m_pageTimer;
     int m_pageGeneration = 0;

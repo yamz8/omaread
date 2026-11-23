@@ -960,8 +960,8 @@ void Backend::countPages() {
     if (!m_book || m_book->paged() || m_page.width <= 0 || m_page.height <= 0)
         return;
     m_pageCancel = std::make_shared<std::atomic_bool>(false);
-    auto *watcher = new QFutureWatcher<QList<QList<double>>>(this);
-    connect(watcher, &QFutureWatcher<QList<QList<double>>>::finished, this, [this, watcher, generation] {
+    auto *watcher = new QFutureWatcher<QList<Layout::Pages>>(this);
+    connect(watcher, &QFutureWatcher<QList<Layout::Pages>>::finished, this, [this, watcher, generation] {
         watcher->deleteLater();
         if (generation != m_pageGeneration)
             return;
@@ -970,7 +970,7 @@ void Backend::countPages() {
         int before = 0;
         for (const auto &section : std::as_const(m_pages)) {
             m_pagesBefore << before;
-            before += int(section.size());
+            before += int(section.tops.size());
         }
         emit pagesChanged();
     });
@@ -982,14 +982,50 @@ void Backend::countPages() {
 int Backend::pageCount() const {
     int count = 0;
     for (const auto &section : m_pages)
-        count += int(section.size());
+        count += int(section.tops.size());
     return count;
 }
 
+QVariantMap Backend::pagePreview(int page) const {
+    if (!m_book)
+        return {};
+    int section = page - 1, index = 0;
+    double position = 0;
+    const bool counted = !m_book->paged() && pageCount() > 0;
+    if (counted) {
+        page = std::clamp(page, 1, pageCount());
+        section = int(std::upper_bound(m_pagesBefore.begin(), m_pagesBefore.end(), page - 1) - m_pagesBefore.begin()) - 1;
+        index = page - 1 - m_pagesBefore.value(section);
+        const Layout::Pages &pages = m_pages[section];
+        const double scroll = pages.height - m_page.height;
+        position = scroll > 0 ? std::clamp(pages.tops.value(index) / scroll, 0.0, 1.0) : 0;
+    }
+    section = std::clamp(section, 0, m_book->sectionCount() - 1);
+    QString text;
+    if (!m_book->paged()) {
+        const QString all = m_book->plainText(section);
+        const int from = counted ? m_pages[section].characters.value(index) : 0;
+        text = all.mid(from, 360);
+        for (QChar &c : text)
+            if (c == QChar::ParagraphSeparator || c == QChar::LineSeparator || c == '\n')
+                c = ' ';
+        text = text.simplified();
+    }
+    return {{"section", section}, {"position", position}, {"chapter", chapterLabelFor(section)}, {"text", text}};
+}
+
+void Backend::goToPage(int page) {
+    const QVariantMap preview = pagePreview(page);
+    if (preview.isEmpty())
+        return;
+    markPlace();
+    goTo(preview.value("section").toInt(), preview.value("position").toDouble());
+}
+
 int Backend::pageAt(int section, double contentY) const {
-    if (section < 0 || section >= m_pages.size() || m_pages[section].isEmpty())
+    if (section < 0 || section >= m_pages.size() || m_pages[section].tops.isEmpty())
         return 0;
-    const QList<double> &starts = m_pages[section];
+    const QList<double> &starts = m_pages[section].tops;
     // The last page that starts at or above the top of the view.
     const auto it = std::upper_bound(starts.begin(), starts.end(), contentY + 1);
     return m_pagesBefore.value(section) + std::max(1, int(it - starts.begin()));

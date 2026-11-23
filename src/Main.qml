@@ -31,7 +31,7 @@ ApplicationWindow {
     readonly property int columnChars: backend.columnWidth === "narrow" ? 28 : backend.columnWidth === "wide" ? 42 : 34
 
     // Single-key shortcuts rest while a popup or the search field has the keyboard.
-    readonly property bool busy: help.opened || contents.visible || goDialog.opened || passwordDialog.opened
+    readonly property bool busy: help.opened || contents.visible || skim.visible || passwordDialog.opened
                                  // From the moment it appears, not once its opening animation ends,
                                  // or a key pressed right after S turns the page behind it.
                                  || settings.visible || note.visible
@@ -464,8 +464,8 @@ ApplicationWindow {
     Shortcut { sequences: ["Backspace", "Alt+Left"]; enabled: win.reading && backend.canGoBack; onActivated: win.goBack() }
     Shortcut { sequences: ["Shift+Backspace", "Alt+Right"]; enabled: win.reading && backend.canGoForward; onActivated: win.goForward() }
     Shortcut { sequence: "T"; enabled: backend.open && (!win.busy || contents.visible); onActivated: contents.visible ? contents.close() : contents.open() }
-    Shortcut { sequence: "G"; enabled: win.reading; onActivated: goDialog.open() }
-    Shortcut { sequences: ["/", StandardKey.Find]; enabled: backend.open && settled && !help.opened && !contents.opened && !goDialog.opened; onActivated: win.startFinding() }
+    Shortcut { sequence: "G"; enabled: win.reading; onActivated: skim.open() }
+    Shortcut { sequences: ["/", StandardKey.Find]; enabled: backend.open && settled && !help.opened && !contents.visible && !skim.visible; onActivated: win.startFinding() }
     Shortcut { sequences: ["N", StandardKey.FindNext]; enabled: win.reading && backend.hitCount > 0; onActivated: backend.nextHit() }
     Shortcut { sequences: ["Shift+N", StandardKey.FindPrevious]; enabled: win.reading && backend.hitCount > 0; onActivated: backend.previousHit() }
     Shortcut { sequences: ["+", "="]; enabled: win.reading; onActivated: win.resize(1) }
@@ -1059,6 +1059,8 @@ ApplicationWindow {
 
                 RowLayout {
                     id: statusBar
+                    // Out of the way of a panel over the bottom of the page.
+                    visible: !settings.visible && !note.visible && !skim.visible
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
@@ -1657,46 +1659,203 @@ ApplicationWindow {
         }
     }
 
-    // Go to a page or section by its number.
-    Dialog {
-        id: goDialog
-        objectName: "goDialog"
-        anchors.centerIn: Overlay.overlay
-        modal: true
-        title: backend.paged ? qsTr("Go to page") : qsTr("Go to section")
-        Material.roundedScale: theme.radius
+    // Skimming the book: where every page and chapter lies, and a page to look
+    // at without leaving the one being read. Left and Right move a page,
+    // Shift with them a chapter, a typed number goes to that page, Enter goes
+    // there and Escape stays. While a book's pages are still being counted,
+    // it moves by sections.
+    Popup {
+        id: skim
+        objectName: "skim"
+        property int page: 1
+        readonly property bool counted: !backend.paged && backend.pageCount > 0
+        readonly property int pages: counted ? backend.pageCount : backend.sectionCount
+        readonly property int here: {
+            void view.contentY
+            return counted ? backend.pageAt(backend.section, view.contentY) : backend.section + 1
+        }
+        readonly property var preview: {
+            void backend.pageCount
+            return visible ? backend.pagePreview(page) : ({})
+        }
+        // Opened while the pages were being counted, it moved by sections;
+        // once they're counted, it looks at the page being read.
+        onCountedChanged: if (visible) page = here
+        // The pages chapters start on, for Shift with an arrow and the track's marks.
+        readonly property var chapterStarts: {
+            const starts = backend.toc.map(e => counted ? backend.pageAt(e.section, 0) : e.section + 1)
+            return [...new Set(starts)].sort((a, b) => a - b)
+        }
+        x: Math.round((win.width - width) / 2)
+        y: win.height - height - 8
+        width: Math.min(720, win.width - 32)
+        modal: false
+        dim: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: 20
         background: Rectangle {
             color: theme.background
             border.color: theme.colors.selection
             radius: theme.radius
         }
-        onOpened: { pageField.text = ""; pageField.forceActiveFocus() }
-        onAccepted: {
-            const n = parseInt(pageField.text)
-            if (n >= 1 && n <= backend.sectionCount) {
-                win.markJump()
-                win.jump(n - 1, 0)
-            }
+        onAboutToShow: {
+            page = here
+            pageNumber.text = ""
+            pageNumber.forceActiveFocus()
         }
 
-        TextField {
-            id: pageField
-            objectName: "pageField"
-            implicitWidth: 280
-            LayoutMirroring.enabled: win.rightToLeft
-            placeholderText: qsTr("1 to %1").arg(win.number(backend.sectionCount))
-            inputMethodHints: Qt.ImhDigitsOnly
-            validator: IntValidator { bottom: 1; top: Math.max(1, backend.sectionCount) }
-            Material.roundedScale: theme.radius
-            onAccepted: goDialog.accept()
+        function move(to) { page = Math.max(1, Math.min(pages, to)) }
+        function chapter(step) {
+            const starts = step > 0 ? chapterStarts.filter(p => p > page) : chapterStarts.filter(p => p < page)
+            if (starts.length > 0)
+                move(step > 0 ? starts[0] : starts[starts.length - 1])
+        }
+        function go() {
+            close()
+            if (page === here)
+                return
+            backend.goToPage(page)
+            win.hintBack()
+            Qt.callLater(win.restore)
         }
 
-        footer: DialogButtonBox {
+        ColumnLayout {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            spacing: 12
             LayoutMirroring.enabled: win.rightToLeft
             LayoutMirroring.childrenInherit: true
-            background: null
-            Button { text: qsTr("Cancel"); flat: true; Material.roundedScale: theme.radius; DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
-            Button { text: qsTr("Go"); flat: true; Material.roundedScale: theme.radius; DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+
+            RowLayout {
+                Layout.fillWidth: true
+                Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignLeft
+                    text: skim.preview.chapter || backend.title
+                    font.bold: true
+                    elide: Text.ElideRight
+                }
+                Label {
+                    objectName: "skimPage"
+                    color: win.muted
+                    text: skim.counted || backend.paged ? qsTr("Page %1 of %2").arg(win.number(skim.page)).arg(win.number(skim.pages))
+                                                        : qsTr("Counting pages…")
+                }
+            }
+            // The page's first words, or, for a PDF or comic, the page itself.
+            Label {
+                Layout.fillWidth: true
+                visible: !backend.paged
+                horizontalAlignment: Text.AlignLeft
+                text: skim.preview.text || ""
+                wrapMode: Text.Wrap
+                maximumLineCount: 4
+                elide: Text.ElideRight
+                font.family: prose.font.family
+                font.pixelSize: Math.round(win.readingSize * 0.85)
+                lineHeight: 1.3
+            }
+            Image {
+                Layout.alignment: Qt.AlignHCenter
+                visible: backend.paged
+                Layout.preferredHeight: Math.round(win.height * 0.3)
+                Layout.preferredWidth: Math.round(Layout.preferredHeight * win.aspect(skim.page - 1))
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                source: backend.paged && skim.visible ? "image://omaread/page/" + backend.bookId + "/" + (skim.page - 1) + win.tint : ""
+                sourceSize.height: Math.round(win.height * 0.3 * Screen.devicePixelRatio)
+            }
+            // The whole book: chapters marked, the page being read, and the
+            // page looked at. Books keep their reading direction.
+            Item {
+                id: track
+                objectName: "skimTrack"
+                Layout.fillWidth: true
+                implicitHeight: 24
+                LayoutMirroring.enabled: false
+                function xOf(page) { return skim.pages > 1 ? (page - 1) / (skim.pages - 1) * width : 0 }
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width
+                    height: 2
+                    color: theme.colors.selection
+                }
+                Repeater {
+                    model: skim.chapterStarts
+                    delegate: Rectangle {
+                        required property int modelData
+                        x: Math.round(track.xOf(modelData))
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 1
+                        height: 10
+                        color: win.muted
+                    }
+                }
+                Rectangle {
+                    x: Math.round(track.xOf(skim.here)) - width / 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 8
+                    height: 8
+                    radius: 4
+                    color: win.muted
+                }
+                Rectangle {
+                    x: Math.round(track.xOf(skim.page)) - width / 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 14
+                    height: 14
+                    radius: 7
+                    color: theme.accent
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    preventStealing: true
+                    function at(x) { skim.move(Math.round(Math.max(0, Math.min(1, x / width)) * (skim.pages - 1)) + 1) }
+                    onPressed: mouse => at(mouse.x)
+                    onPositionChanged: mouse => at(mouse.x)
+                    onReleased: skim.go()
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 16
+                TextField {
+                    id: pageNumber
+                    objectName: "pageField"
+                    implicitWidth: 180
+                    placeholderText: qsTr("Go to page")
+                    inputMethodHints: Qt.ImhDigitsOnly
+                    validator: IntValidator { bottom: 1; top: Math.max(1, skim.pages) }
+                    Material.roundedScale: theme.radius
+                    onTextEdited: if (text !== "") skim.move(parseInt(text))
+                    Keys.onReturnPressed: skim.go()
+                    Keys.onEnterPressed: skim.go()
+                    Keys.onPressed: event => {
+                        const chapter = event.modifiers & Qt.ShiftModifier
+                        // Mirrored, Left is later in the book, as it is read.
+                        const forward = (event.key === Qt.Key_Right) !== win.rightToLeft
+                        if (event.key === Qt.Key_Left || event.key === Qt.Key_Right) {
+                            chapter ? skim.chapter(forward ? 1 : -1) : skim.move(skim.page + (forward ? 1 : -1))
+                            event.accepted = true
+                        } else if (event.key === Qt.Key_PageDown || event.key === Qt.Key_PageUp) {
+                            skim.chapter(event.key === Qt.Key_PageDown ? 1 : -1)
+                            event.accepted = true
+                        } else if (event.key === Qt.Key_Home || event.key === Qt.Key_End) {
+                            skim.move(event.key === Qt.Key_Home ? 1 : skim.pages)
+                            event.accepted = true
+                        }
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignRight
+                    color: win.muted
+                    font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                    wrapMode: Text.Wrap
+                    text: qsTr("← → a page  ·  Shift+← → a chapter  ·  Enter to go  ·  Esc to stay")
+                }
+            }
         }
     }
 
@@ -1778,7 +1937,7 @@ ApplicationWindow {
                     { keys: "↓ ↑  J K", action: qsTr("Scroll") },
                     { keys: "]  [", action: qsTr("Next or previous section") },
                     { keys: "Home  End", action: qsTr("First or last section") },
-                    { keys: "G", action: qsTr("Go to a page or section") },
+                    { keys: "G", action: qsTr("Skim the book, or go to a page") },
                     { keys: "T", action: qsTr("Contents and bookmarks") },
                     { keys: "/  Ctrl+F", action: qsTr("Find in the book") },
                     { keys: "N  Shift+N", action: qsTr("Next or previous match") },

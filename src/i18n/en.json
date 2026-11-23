@@ -15,7 +15,6 @@
     "one": "%Ln min left in chapter",
     "other": "%Ln min left in chapter"
   },
-  "1 to %1": "1 to %1",
   "Alignment": "Alignment",
   "All files": "All files",
   "Back or forward after a jump": "Back or forward after a jump",
@@ -50,11 +49,8 @@
   "Fit pages to the width or the window": "Fit pages to the width or the window",
   "Flip": "Flip",
   "Full screen": "Full screen",
-  "Go": "Go",
-  "Go to a page or section": "Go to a page or section",
   "Go to note": "Go to note",
   "Go to page": "Go to page",
-  "Go to section": "Go to section",
   "Justified": "Justified",
   "Larger, smaller, or reset text and pages": "Larger, smaller, or reset text and pages",
   "Less than a minute left in book": "Less than a minute left in book",
@@ -101,6 +97,7 @@
   "Serif": "Serif",
   "Show or hide the shortcuts": "Show or hide the shortcuts",
   "Show time left, the page, or the percent read": "Show time left, the page, or the percent read",
+  "Skim the book, or go to a page": "Skim the book, or go to a page",
   "Slide": "Slide",
   "Text size": "Text size",
   "That password didn't open %1. Try again.": "That password didn't open %1. Try again.",
@@ -112,5 +109,6 @@
   "Time left in chapter": "Time left in chapter",
   "Typeface": "Typeface",
   "Wide": "Wide",
+  "← → a page  ·  Shift+← → a chapter  ·  Enter to go  ·  Esc to stay": "← → a page  ·  Shift+← → a chapter  ·  Enter to go  ·  Esc to stay",
   "↑ ↓ to choose  ·  ← → to change  ·  S to close": "↑ ↓ to choose  ·  ← → to change  ·  S to close"
 }

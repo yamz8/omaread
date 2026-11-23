@@ -27,6 +27,7 @@ constexpr int justifyProperty = QTextFormat::UserProperty + 3;
 
 struct Line {
     double top, height;
+    int character;
 };
 
 } // namespace
@@ -80,8 +81,8 @@ void typeset(QTextDocument *text, double lineHeight, double paragraphGap, bool j
     cursor.endEditBlock();
 }
 
-QList<QList<double>> paginate(const Book &book, const Page &page, const std::atomic_bool *cancel) {
-    QList<QList<double>> pages;
+QList<Pages> paginate(const Book &book, const Page &page, const std::atomic_bool *cancel) {
+    QList<Pages> pages;
     if (book.paged() || page.width <= 0 || page.height <= 0 || page.pixelSize <= 0)
         return pages;
     QFont font(page.family);
@@ -119,7 +120,7 @@ QList<QList<double>> paginate(const Book &book, const Page &page, const std::ato
             const QTextLayout *lines_ = block.layout();
             for (int i = 0; lines_ && i < lines_->lineCount(); ++i) {
                 const QTextLine line = lines_->lineAt(i);
-                lines.push_back({box.top() + line.y(), line.height()});
+                lines.push_back({box.top() + line.y(), line.height(), block.position() + line.textStart()});
             }
         }
         const double textHeight = document.size().height();
@@ -128,6 +129,14 @@ QList<QList<double>> paginate(const Book &book, const Page &page, const std::ato
         // Space's walk through the chapter: the next page starts where the
         // line the bottom edge cuts begins, less the turn's pad, unless no line
         // is cut or the cut one is too tall to hide (a picture).
+        // The first character on the page starting at a scroll offset: on the
+        // first line whose top shows below the page's top margin.
+        auto firstCharacter = [&](double offset) {
+            const double y = offset - textMargin;
+            const auto it = std::lower_bound(lines.begin(), lines.end(), y - 1,
+                                             [](const Line &line, double at) { return line.top < at; });
+            return it == lines.end() ? (lines.empty() ? 0 : lines.back().character) : it->character;
+        };
         QList<double> starts{0};
         double top = 0;
         while (top + view < content - 2) {
@@ -152,7 +161,10 @@ QList<QList<double>> paginate(const Book &book, const Page &page, const std::ato
             starts << next;
             top = next;
         }
-        pages << starts;
+        Pages section_{starts, {}, content};
+        for (const double start : std::as_const(starts))
+            section_.characters << firstCharacter(start);
+        pages << section_;
     }
     return pages;
 }

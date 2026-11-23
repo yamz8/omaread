@@ -37,9 +37,18 @@ struct Page {
 constexpr int textMargin = 40;
 constexpr int turnPad = 24;
 
-// Where each page of every section starts, as a scroll offset in the view:
-// a page turn starts the next page at the line the last one cut off, so these
-// are the places Space stops at. Empty when cancelled.
-QList<QList<double>> paginate(const Book &book, const Page &page, const std::atomic_bool *cancel = nullptr);
+// A section's pages, as the window shows them: where each page starts, as a
+// scroll offset in the view and as the first character on it, and how tall
+// the section is laid out.
+struct Pages {
+    QList<double> tops;
+    QList<int> characters;
+    double height = 0;
+};
+
+// Every section's pages. A page turn starts the next page at the line the
+// last one cut off, so these are the places Space stops at. Empty when
+// cancelled.
+QList<Pages> paginate(const Book &book, const Page &page, const std::atomic_bool *cancel = nullptr);
 
 } // namespace Layout

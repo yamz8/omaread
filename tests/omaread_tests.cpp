@@ -1609,13 +1609,25 @@ private slots:
         QCOMPARE(backend.section(), 0);
         QVERIFY(!window->property("turning").toBool());
 
-        // G goes to a section by its number.
-        auto *goDialog = window->findChild<QObject *>("goDialog");
+        // G skims the book: Right looks a page on and Escape stays put; a typed
+        // page number and Enter go there.
+        QTRY_VERIFY(backend.pageCount() > 0);
+        auto *skim = window->findChild<QObject *>("skim");
+        QVERIFY(skim);
+        const int section = backend.section();
         QTest::keyClick(window, Qt::Key_G);
-        QTRY_VERIFY(goDialog->property("opened").toBool());
-        typeInto(window, "2");
+        QTRY_VERIFY(skim->property("visible").toBool());
+        const int here = skim->property("here").toInt();
+        QTest::keyClick(window, Qt::Key_Right);
+        QCOMPARE(skim->property("page").toInt(), here + 1);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!skim->property("visible").toBool());
+        QCOMPARE(backend.section(), section);
+        QTest::keyClick(window, Qt::Key_G);
+        QTRY_VERIFY(skim->property("visible").toBool());
+        typeInto(window, QString::number(backend.pageAt(1, 0)));
         QTest::keyClick(window, Qt::Key_Return);
-        QTRY_VERIFY(!goDialog->property("visible").toBool());
+        QTRY_VERIFY(!skim->property("visible").toBool());
         QCOMPARE(backend.section(), 1);
 
         // / searches; the match is selected, and Ctrl+C copies it.
