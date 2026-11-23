@@ -1385,6 +1385,17 @@ private slots:
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_VERIFY(!note->property("visible").toBool());
         QCOMPARE(backend.section(), 1);
+
+        // From the keyboard: Tab chooses the note's number, Enter opens it.
+        QVERIFY(backend.goBack());
+        QCOMPARE(backend.section(), 0);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QCOMPARE(prose->property("selectedText").toString(), QString("1"));
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(note->property("visible").toBool());
+        QCOMPARE(backend.section(), 0);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!note->property("visible").toBool());
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 

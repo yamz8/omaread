@@ -772,6 +772,42 @@ void Backend::copyText(const QString &text) {
         clipboard->setText(text);
 }
 
+QVariantList Backend::linksIn(QQuickTextDocument *document) const {
+    QVariantList links;
+    QTextDocument *text = document ? document->textDocument() : nullptr;
+    if (!text)
+        return links;
+    QString href;
+    int start = -1, end = -1;
+    auto close = [&] {
+        if (start >= 0)
+            links << QVariantMap{{"start", start}, {"end", end}, {"href", href}};
+        start = -1;
+    };
+    for (QTextBlock block = text->begin(); block.isValid(); block = block.next()) {
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const QTextFragment fragment = it.fragment();
+            const QTextCharFormat format = fragment.charFormat();
+            const QString target = format.isAnchor() ? format.anchorHref() : QString();
+            // One link may run over several fragments, as italics inside it.
+            if (!target.isEmpty() && target == href && start >= 0 && fragment.position() == end) {
+                end = fragment.position() + fragment.length();
+                continue;
+            }
+            close();
+            if (!target.isEmpty()) {
+                href = target;
+                start = fragment.position();
+                end = start + fragment.length();
+            } else {
+                href.clear();
+            }
+        }
+    }
+    close();
+    return links;
+}
+
 void Backend::loadImages(QQuickTextDocument *document) {
     QTextDocument *text = document ? document->textDocument() : nullptr;
     if (!text || !m_book || m_book->kind != Book::Kind::Epub)

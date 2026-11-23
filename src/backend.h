@@ -235,6 +235,9 @@ public:
     // Puts a chapter's images into its document as it arrives. Left to the
     // TextEdit, an image it hasn't drawn before loads late and is never shown.
     Q_INVOKABLE void loadImages(QQuickTextDocument *document);
+    // The links in a chapter's text, in reading order, each {start, end, href}
+    // by character position, so the keyboard can reach them.
+    Q_INVOKABLE QVariantList linksIn(QQuickTextDocument *document) const;
 
     // Writes the library now rather than after the pause that gathers changes.
     void save();

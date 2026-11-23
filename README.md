@@ -40,6 +40,7 @@ omaread skill install               # teach coding agents to use these commands
 | `]` `[` | Next or previous section |
 | `Home` `End` | First or last section |
 | `G` | Go to a page or section |
+| `Tab` `Shift+Tab` `Enter` | Choose a link or note on the page, and open it |
 | `Backspace` `Shift+Backspace` | Back to where a jump left, and on again |
 | `T` | Table of contents |
 | `/` `Ctrl+F` | Find in the book |

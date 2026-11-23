@@ -77,7 +77,10 @@ ApplicationWindow {
 
     // Reading the language makes every binding that formats a number
     // re-render in the new language's digits on a switch.
-    function number(n) { return translator.language, Number(n).toLocaleString(Qt.locale(), 'f', 0) }
+    function number(n) {
+        void translator.language
+        return Number(n).toLocaleString(Qt.locale(), 'f', 0)
+    }
     function percent(p) { return qsTr("%1%").arg(number(Math.round(p * 100))) }
     function aspect(page) { return backend.aspects[page] || 0.7071 }
 
@@ -94,6 +97,7 @@ ApplicationWindow {
         screenStarted = Date.now()
     }
     function forward() {
+        letLinkGo()
         noteScreenRead()
         if (view.contentY + view.height >= view.contentHeight - 2) {
             if (backend.section + step < backend.sectionCount)
@@ -105,6 +109,7 @@ ApplicationWindow {
         }
     }
     function backward() {
+        letLinkGo()
         screenStarted = Date.now()
         if (view.contentY <= 1) {
             if (backend.section > 0)
@@ -332,7 +337,39 @@ ApplicationWindow {
             }
         }
     }
+    // The keyboard's way to a link: Tab and Shift+Tab step through the links
+    // on screen, Enter opens the one chosen, and Escape lets it go.
+    property var chosenLink: null
+    function linksOnScreen() {
+        const top = view.contentY - prose.y, bottom = top + view.height - lineCover.bottom
+        return backend.linksIn(prose.textDocument).filter(link => {
+            const y = prose.positionToRectangle(link.start).y
+            return y >= top && y < bottom
+        })
+    }
+    function chooseLink(step) {
+        const links = linksOnScreen()
+        if (links.length === 0) {
+            chosenLink = null
+            say(qsTr("No links on this page"))
+            return
+        }
+        const at = chosenLink ? links.findIndex(link => link.start === chosenLink.start) : -1
+        chosenLink = links[at < 0 ? (step > 0 ? 0 : links.length - 1) : (at + step + links.length) % links.length]
+        prose.select(chosenLink.start, chosenLink.end)
+    }
+    function letLinkGo() {
+        if (chosenLink)
+            prose.deselect()
+        chosenLink = null
+    }
+    function openChosenLink() {
+        const href = chosenLink.href
+        letLinkGo()
+        openLink(href)
+    }
     function clearSelections() {
+        chosenLink = null
         prose.deselect()
         for (let i = 0; i < sheets.count; ++i)
             if (sheets.itemAt(i))
@@ -355,7 +392,9 @@ ApplicationWindow {
         view.forceActiveFocus()
     }
     function leave() {
-        if (backend.error !== "")
+        if (chosenLink)
+            letLinkGo()
+        else if (backend.error !== "")
             backend.dismissError()
         else if (finding)
             stopFinding()
@@ -397,6 +436,9 @@ ApplicationWindow {
     Shortcut { sequence: "["; enabled: win.reading; onActivated: win.jump(Math.max(0, backend.section - win.step), 0) }
     Shortcut { sequence: "Home"; enabled: win.reading; onActivated: { win.markJump(); win.jump(0, 0) } }
     Shortcut { sequence: "End"; enabled: win.reading; onActivated: { win.markJump(); win.jump(backend.sectionCount - 1, 0) } }
+    Shortcut { sequence: "Tab"; enabled: win.reading && !backend.paged; onActivated: win.chooseLink(1) }
+    Shortcut { sequence: "Backtab"; enabled: win.reading && !backend.paged; onActivated: win.chooseLink(-1) }
+    Shortcut { sequences: ["Return", "Enter"]; enabled: win.reading && win.chosenLink !== null; onActivated: win.openChosenLink() }
     Shortcut { sequences: ["Backspace", "Alt+Left"]; enabled: win.reading && backend.canGoBack; onActivated: win.goBack() }
     Shortcut { sequences: ["Shift+Backspace", "Alt+Right"]; enabled: win.reading && backend.canGoForward; onActivated: win.goForward() }
     Shortcut { sequence: "T"; enabled: backend.open && (!win.busy || contents.opened); onActivated: contents.opened ? contents.close() : contents.open() }
@@ -1477,6 +1519,7 @@ ApplicationWindow {
                     { keys: "W", action: qsTr("Fit pages to the width or the window") },
                     { keys: "D", action: qsTr("One page or two side by side") },
                     { keys: "I", action: qsTr("Color pages like the theme") },
+                    { keys: "Tab  Enter", action: qsTr("Choose a link or note on the page, and open it") },
                     { keys: "Backspace  Shift+Backspace", action: qsTr("Back or forward after a jump") },
                     { keys: "P", action: qsTr("Show time left, the page, or the percent read") },
                     { keys: "S", action: qsTr("Reading settings: typeface, spacing, column") },
