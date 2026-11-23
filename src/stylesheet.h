@@ -46,7 +46,11 @@ public:
 // "qe", a unit of the reading text size that sized() turns into pixels, so
 // the book's spacing grows and shrinks with the text. Returns a null string
 // when the chapter isn't well-formed XML, for the caller to read another way.
-QString apply(const QByteArray &xhtml, const QList<const Sheet *> &sheets);
+//
+// With notes given, the footnotes and endnotes in the chapter are also
+// written there by their id, each styled like the text and without the link
+// back to where it's referred to, so the reader can show one in place.
+QString apply(const QByteArray &xhtml, const QList<const Sheet *> &sheets, QHash<QString, QString> *notes = nullptr);
 
 // The stylesheets a chapter links to and carries, as paths inside the book
 // relative to the chapter, and the text of its <style> elements.

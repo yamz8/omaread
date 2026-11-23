@@ -469,6 +469,11 @@ QString escapeText(const QString &text) {
     return out;
 }
 
+// What an element is, by EPUB 3's epub:type and ARIA's role.
+QStringList kinds(const Node *node) {
+    return (node->attribute("epub:type") + ' ' + node->attribute("role")).split(' ', Qt::SkipEmptyParts);
+}
+
 // Text a book keeps for screen readers but hides from the eye: invisible, or
 // moved far outside the page, as headings over a title page often are.
 bool isHidden(const QHash<QString, QString> &declared) {
@@ -498,13 +503,15 @@ public:
             }
     }
 
-    QString render(const Node *body) {
+    QString render(const Node *body, QHash<QString, QString> *notes) {
         Computed root;
         QString out;
         for (const auto &child : body->children)
             if (auto styled = build(child.get(), root)) {
                 moveMargins(styled.get());
                 write(styled.get(), &out);
+                if (notes)
+                    collectNotes(styled.get(), notes);
             }
         return out;
     }
@@ -612,6 +619,17 @@ private:
         styled->tag = tag;
         styled->block = blockTags().contains(tag);
         QStringList &style = styled->style;
+
+        // A note's number is raised, as every reader sets it, at the size Qt
+        // gives a superscript, which the book's own smaller size would shrink
+        // again past reading; an underline beneath it reads as a stray line.
+        const bool noteref = tag == "a" && (kinds(node).contains("noteref") || kinds(node).contains("doc-noteref"));
+        if (noteref) {
+            self.declared.remove("font-size");
+            self.declared.insert("text-decoration", "none");
+            if (!self.declared.contains("vertical-align"))
+                self.declared.insert("vertical-align", "super");
+        }
 
         // Text size, relative to the reading size, so it scales with it.
         self.fontScale = parent.fontScale;
@@ -763,7 +781,39 @@ private:
             moveMargins(child.get());
     }
 
-    static void write(const Styled *styled, QString *out) {
+    // A footnote or endnote, as EPUB 3 marks them, or as ARIA's roles do.
+    static bool isNote(const Node *node) {
+        static const QStringList notes = {"footnote", "endnote", "rearnote", "note", "doc-footnote", "doc-endnote"};
+        if (node->attribute("id").isEmpty())
+            return false;
+        for (const QString &kind : kinds(node))
+            if (notes.contains(kind))
+                return true;
+        return false;
+    }
+
+    static void collectNotes(const Styled *styled, QHash<QString, QString> *notes) {
+        if (!styled->node)
+            return;
+        if (isNote(styled->node)) {
+            QString html;
+            for (const auto &child : styled->children)
+                write(child.get(), &html, true);
+            notes->insert(styled->node->attribute("id"), html.trimmed());
+            return;
+        }
+        for (const auto &child : styled->children)
+            collectNotes(child.get(), notes);
+    }
+
+    // In a note shown in place, the link back to where it was referred to
+    // leads nowhere useful, so it's left out.
+    static void write(const Styled *styled, QString *out, bool inNote = false) {
+        if (inNote && styled->node) {
+            const QStringList k = kinds(styled->node);
+            if (k.contains("backlink") || k.contains("doc-backlink"))
+                return;
+        }
         if (!styled->node) {
             *out += escapeText(styled->text);
             return;
@@ -789,7 +839,7 @@ private:
         }
         *out += '>';
         for (const auto &child : styled->children)
-            write(child.get(), out);
+            write(child.get(), out, inNote);
         *out += "</" + styled->tag + '>';
     }
 };
@@ -881,7 +931,7 @@ void linkedSheets(const QByteArray &xhtml, QStringList *hrefs, QStringList *inli
     }
 }
 
-QString apply(const QByteArray &xhtml, const QList<const Sheet *> &sheets) {
+QString apply(const QByteArray &xhtml, const QList<const Sheet *> &sheets, QHash<QString, QString> *notes) {
     QXmlStreamReader xml(xhtml);
     Node root;
     Node *current = &root;
@@ -918,7 +968,7 @@ QString apply(const QByteArray &xhtml, const QList<const Sheet *> &sheets) {
     if (xml.hasError() || !body)
         return {};
     index(&root);
-    return Restyler(sheets).render(body).trimmed();
+    return Restyler(sheets).render(body, notes).trimmed();
 }
 
 QString sized(const QString &html, int pixelSize) {

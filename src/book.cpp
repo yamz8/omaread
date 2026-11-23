@@ -441,7 +441,8 @@ bool Book::loadEpub(Error *error) {
         QList<const Styling::Sheet *> cascade;
         for (const auto &s : std::as_const(held))
             cascade << s.get();
-        QString html = Styling::apply(xhtml, cascade);
+        QHash<QString, QString> chapterNotes;
+        QString html = Styling::apply(xhtml, cascade, &chapterNotes);
         const bool styled = !html.isNull();
         if (!styled) {
             html = decodeText(files.value(chapter));
@@ -450,49 +451,55 @@ bool Book::loadEpub(Error *error) {
                 html = body.captured(1);
             html.remove(dropPattern);
         }
-        // Images first, so the ones the SVG pass makes aren't rewritten again.
-        html = replaceAll(html, imgPattern, [&](const QRegularExpressionMatch &match) {
-            return image(chapter, attribute(match.captured(), "src"), decodeHtml(attribute(match.captured(), "alt")));
-        });
-        // A cover is often an SVG wrapping one image: keep only the image.
-        html = replaceAll(html, svgPattern, [&](const QRegularExpressionMatch &svg) {
-            QString images;
-            for (auto it = svgImagePattern.globalMatch(svg.captured()); it.hasNext();) {
-                const QString tag = it.next().captured();
-                QString href = attribute(tag, "xlink:href");
-                if (href.isEmpty())
-                    href = attribute(tag, "href");
-                images += image(chapter, href, {});
-            }
-            return images;
-        });
-        // Links to other chapters are followed inside the reader; the rest
-        // open in the browser.
-        // An anchor keeps its id, which a link or the contents may point at,
-        // and its style, as a footnote's raised number has.
-        html = replaceAll(html, linkPattern, [&](const QRegularExpressionMatch &match) {
-            const QString tag = match.captured();
-            QString kept;
-            for (const QString name : {"id", "name", "style"})
-                if (const QString value = attribute(tag, name); !value.isEmpty())
-                    kept += ' ' + name + "=\"" + value + '"';
-            const QString href = decodeHtml(attribute(tag, "href"));
-            if (href.isEmpty())
-                return "<a" + kept + ">";
-            if (!QUrl(href).scheme().isEmpty())
-                return "<a href=\"" + escapeAttribute(href) + "\"" + kept + ">";
-            const int target = int(spine.indexOf(resolve(chapter, href)));
-            const QString fragment = QUrl(href).fragment(QUrl::FullyDecoded);
-            return target < 0 ? "<a" + kept + ">"
-                              : QString("<a href=\"omaread:%1%2\"%3>")
-                                    .arg(target)
-                                    .arg(fragment.isEmpty() ? QString() : "#" + escapeAttribute(fragment), kept);
-        });
-        if (!styled)
-            html = replaceAll(html, stylePattern, [&](const QRegularExpressionMatch &match) {
-                const QString style = keptStyle(decodeHtml(match.captured(1).mid(1, match.captured(1).size() - 2)));
-                return style.isEmpty() ? QString() : " style=\"" + escapeAttribute(style) + "\"";
+        // Images, SVG covers and links, the same in the chapter and its notes.
+        auto finish = [&](QString text) {
+            // Images first, so the ones the SVG pass makes aren't rewritten again.
+            text = replaceAll(text, imgPattern, [&](const QRegularExpressionMatch &match) {
+                return image(chapter, attribute(match.captured(), "src"), decodeHtml(attribute(match.captured(), "alt")));
             });
+            // A cover is often an SVG wrapping one image: keep only the image.
+            text = replaceAll(text, svgPattern, [&](const QRegularExpressionMatch &svg) {
+                QString images;
+                for (auto it = svgImagePattern.globalMatch(svg.captured()); it.hasNext();) {
+                    const QString tag = it.next().captured();
+                    QString href = attribute(tag, "xlink:href");
+                    if (href.isEmpty())
+                        href = attribute(tag, "href");
+                    images += image(chapter, href, {});
+                }
+                return images;
+            });
+            // Links to other chapters are followed inside the reader; the rest
+            // open in the browser. An anchor keeps its id, which a link or the
+            // contents may point at, and its style, as a footnote's raised number has.
+            text = replaceAll(text, linkPattern, [&](const QRegularExpressionMatch &match) {
+                const QString tag = match.captured();
+                QString kept;
+                for (const QString name : {"id", "name", "style"})
+                    if (const QString value = attribute(tag, name); !value.isEmpty())
+                        kept += ' ' + name + "=\"" + value + '"';
+                const QString href = decodeHtml(attribute(tag, "href"));
+                if (href.isEmpty())
+                    return "<a" + kept + ">";
+                if (!QUrl(href).scheme().isEmpty())
+                    return "<a href=\"" + escapeAttribute(href) + "\"" + kept + ">";
+                const int target = int(spine.indexOf(resolve(chapter, href)));
+                const QString fragment = QUrl(href).fragment(QUrl::FullyDecoded);
+                return target < 0 ? "<a" + kept + ">"
+                                  : QString("<a href=\"omaread:%1%2\"%3>")
+                                        .arg(target)
+                                        .arg(fragment.isEmpty() ? QString() : "#" + escapeAttribute(fragment), kept);
+            });
+            if (!styled)
+                text = replaceAll(text, stylePattern, [&](const QRegularExpressionMatch &match) {
+                    const QString style = keptStyle(decodeHtml(match.captured(1).mid(1, match.captured(1).size() - 2)));
+                    return style.isEmpty() ? QString() : " style=\"" + escapeAttribute(style) + "\"";
+                });
+            return text;
+        };
+        html = finish(html);
+        for (auto it = chapterNotes.cbegin(); it != chapterNotes.cend(); ++it)
+            notes.insert(QString("%1#%2").arg(index).arg(it.key()), finish(it.value()));
         sections << html.trimmed();
         aspects << 0;
     }

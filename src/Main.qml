@@ -34,7 +34,7 @@ ApplicationWindow {
     readonly property bool busy: help.opened || contents.opened || goDialog.opened || passwordDialog.opened
                                  // From the moment it appears, not once its opening animation ends,
                                  // or a key pressed right after S turns the page behind it.
-                                 || settings.visible
+                                 || settings.visible || note.visible
                                  || findField.activeFocus
     readonly property bool reading: backend.open && !busy && settled
     readonly property bool browsing: !backend.open && !busy && settled
@@ -108,6 +108,15 @@ ApplicationWindow {
     function screenStep() { return Math.max(40, view.height - 3 * readingSize) }
     function scroll(dy) {
         view.contentY = Math.max(0, Math.min(view.contentY + dy, view.contentHeight - view.height))
+    }
+    // A note opens in place; any other link in the book is followed, and a
+    // link out of it opens in the browser.
+    function openLink(link) {
+        const html = backend.note(link)
+        if (html !== "")
+            note.show(html, link)
+        else if (!backend.followLink(link))
+            Qt.openUrlExternally(link)
     }
     function jump(section, position) {
         if (section === backend.section) {
@@ -658,7 +667,7 @@ ApplicationWindow {
                                     target: backend
                                     function onSettingsChanged() { prose.typeset() }
                                 }
-                                onLinkActivated: link => { if (!backend.followLink(link)) Qt.openUrlExternally(link) }
+                                onLinkActivated: link => win.openLink(link)
 
                                 HoverHandler {
                                     cursorShape: prose.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.IBeamCursor
@@ -1055,6 +1064,111 @@ ApplicationWindow {
                     text: qsTr("↑ ↓ to choose  ·  ← → to change  ·  S to close")
                     color: win.muted
                     font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                }
+            }
+        }
+    }
+
+    // A footnote or endnote, shown over the bottom of the page where its
+    // number was chosen, so reading never leaves the page. Enter goes to the
+    // note itself; Escape or a click outside closes it.
+    Popup {
+        id: note
+        objectName: "note"
+        property string html: ""
+        property string link: ""
+        function show(text, at) {
+            html = text
+            link = at
+            open()
+        }
+        function go() {
+            close()
+            backend.followLink(link)
+        }
+        x: Math.round((win.width - width) / 2)
+        y: win.height - height - 8
+        width: Math.min(680, win.width - 32)
+        modal: false
+        dim: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: 20
+        background: Rectangle {
+            color: theme.background
+            border.color: theme.colors.selection
+            radius: theme.radius
+        }
+        onAboutToShow: { noteView.contentY = 0; notePanel.forceActiveFocus() }
+
+        FocusScope {
+            id: notePanel
+            implicitWidth: noteColumn.implicitWidth
+            implicitHeight: noteColumn.implicitHeight
+            anchors.fill: parent
+            LayoutMirroring.enabled: win.rightToLeft
+            LayoutMirroring.childrenInherit: true
+            Keys.onReturnPressed: note.go()
+            Keys.onEnterPressed: note.go()
+            Keys.onUpPressed: noteView.contentY = Math.max(0, noteView.contentY - 40)
+            Keys.onDownPressed: noteView.contentY = Math.max(0, Math.min(noteView.contentHeight - noteView.height, noteView.contentY + 40))
+
+            ColumnLayout {
+                id: noteColumn
+                anchors.left: parent.left
+                anchors.right: parent.right
+                spacing: 12
+
+                Flickable {
+                    id: noteView
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(noteText.height, Math.round(win.height * 0.4))
+                    contentHeight: noteText.height
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ScrollBar {}
+
+                    TextEdit {
+                        id: noteText
+                        objectName: "noteText"
+                        width: noteView.width
+                        text: note.html
+                        textFormat: TextEdit.RichText
+                        readOnly: true
+                        selectByMouse: true
+                        activeFocusOnPress: false
+                        wrapMode: TextEdit.Wrap
+                        font.pixelSize: Math.round(win.readingSize * 0.9)
+                        font.family: prose.font.family
+                        color: theme.foreground
+                        selectionColor: theme.accent
+                        selectedTextColor: theme.accentForeground
+                        onTextChanged: {
+                            backend.loadImages(textDocument)
+                            backend.typeset(textDocument, win.lineHeight, 0, false)
+                        }
+                        onLinkActivated: link => { note.close(); win.openLink(link) }
+                        HoverHandler {
+                            cursorShape: noteText.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.IBeamCursor
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Esc to close")
+                        color: win.muted
+                        font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                        elide: Text.ElideRight
+                    }
+                    Button {
+                        objectName: "goToNote"
+                        text: qsTr("Go to note")
+                        flat: true
+                        Material.roundedScale: theme.radius
+                        onClicked: note.go()
+                    }
                 }
             }
         }

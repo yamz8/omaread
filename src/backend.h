@@ -166,6 +166,9 @@ public:
     Q_INVOKABLE void goToEntry(int tocIndex);
     // Follows a link inside the book, and says whether it was one.
     Q_INVOKABLE bool followLink(const QString &link);
+    // The footnote or endnote a link inside the book points at, as HTML to
+    // show in place, or an empty string when it points at something else.
+    Q_INVOKABLE QString note(const QString &link) const;
     Q_INVOKABLE void dismissError();
     Q_INVOKABLE void unlock(const QString &password);
     Q_INVOKABLE void cancelPassword();

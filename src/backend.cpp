@@ -510,6 +510,17 @@ void Backend::goToEntry(int index) {
     setTarget(m_book->fragmentOffset(entry.section, entry.fragment));
 }
 
+QString Backend::note(const QString &link) const {
+    if (!m_book || m_book->notes.isEmpty())
+        return {};
+    QString fragment;
+    const int section = m_book->sectionForLink(link, &fragment);
+    if (section < 0 || fragment.isEmpty())
+        return {};
+    const QString html = m_book->notes.value(QString("%1#%2").arg(section).arg(fragment));
+    return html.isEmpty() ? QString() : Styling::sized(Book::withInk(html, m_ink), m_readingSize);
+}
+
 bool Backend::followLink(const QString &link) {
     if (!m_book)
         return false;

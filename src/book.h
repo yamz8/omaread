@@ -68,6 +68,9 @@ public:
     QList<double> aspects;
     // A flowing book's sections: HTML for an EPUB, Markdown, or plain text.
     QStringList sections;
+    // An EPUB's footnotes and endnotes, as HTML like a section's, by
+    // "<section>#<id>": where a link to one points.
+    QHash<QString, QString> notes;
     // Given by the backend, so an image request for a book that has since been
     // replaced is told apart from one for this book.
     int id = 0;

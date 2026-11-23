@@ -293,6 +293,34 @@ QString writePdf(const QString &folder, int pages) {
     return path;
 }
 
+// A two-chapter EPUB in Standard Ebooks' shape: a chapter that refers to an
+// endnote, and the endnotes, each with a link back.
+QString writeNotedEpub(const QString &folder) {
+    const QString path = folder + "/noted.epub";
+    const QByteArray chapter = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\"><head><title>One</title></head>"
+        "<body><section id=\"one\" epub:type=\"chapter\"><p>The serfs were freed"
+        "<a href=\"endnotes.xhtml#note-1\" id=\"noteref-1\" epub:type=\"noteref\">1</a> that year.</p></section></body></html>";
+    const QByteArray endnotes = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\"><head><title>Notes</title></head>"
+        "<body><section id=\"endnotes\" epub:type=\"endnotes\"><ol>"
+        "<li id=\"note-1\" epub:type=\"endnote footnote\"><p>The emancipation of 1861 is <i>meant</i>. "
+        "<a href=\"one.xhtml#noteref-1\" role=\"doc-backlink\" epub:type=\"backlink\">back</a></p></li>"
+        "</ol></section></body></html>";
+    const QByteArray opf = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        "<package xmlns=\"http://www.idpf.org/2007/opf\" version=\"3.0\"><metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">"
+        "<dc:title>Noted</dc:title></metadata><manifest>"
+        "<item id=\"one\" href=\"one.xhtml\" media-type=\"application/xhtml+xml\"/>"
+        "<item id=\"notes\" href=\"endnotes.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>"
+        "<spine><itemref idref=\"one\"/><itemref idref=\"notes\"/></spine></package>";
+    const QByteArray container = "<?xml version=\"1.0\"?><container version=\"1.0\" "
+        "xmlns=\"urn:oasis:names:tc:opendocument:xmlns:container\"><rootfiles>"
+        "<rootfile full-path=\"content.opf\" media-type=\"application/oebps-package+xml\"/></rootfiles></container>";
+    return writeZip(path, {{"mimetype", "application/epub+zip"}, {"META-INF/container.xml", container},
+                           {"content.opf", opf}, {"one.xhtml", chapter}, {"endnotes.xhtml", endnotes}})
+        ? path : QString();
+}
+
 QString writeText(const QString &path, const QByteArray &text) {
     return write(path, text) ? path : QString();
 }
@@ -1123,6 +1151,78 @@ private slots:
         QTest::keyClick(window, Qt::Key_S);
         QTRY_VERIFY(!panel->property("visible").toBool());
         QTRY_VERIFY(!window->property("busy").toBool());
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    }
+
+    void epubKeepsItsNotes() {
+        QTemporaryDir dir;
+        Book::Error error;
+        const auto book = Book::load(writeNotedEpub(dir.path()), 1, &error);
+        QVERIFY(book);
+        QCOMPARE(book->sectionCount(), 2);
+        // The note, styled like the text, without its link back.
+        const QString note = book->notes.value("1#note-1");
+        QVERIFY(note.contains("The emancipation of 1861 is <i>meant</i>."));
+        QVERIFY(!note.contains("back"));
+        // The reference to it is a link to that place, its number raised.
+        QVERIFY(book->sections[0].contains(
+            "<a href=\"omaread:1#note-1\" id=\"noteref-1\" style=\"text-decoration: none; vertical-align: super\">1</a>"));
+    }
+
+    void windowShowsANoteInPlace() {
+        QTemporaryDir dir, files;
+        Translator translator(dir.path() + "/language");
+        Theme theme(dir.path());
+        FakePicker picker;
+        Backend backend(dir.path() + "/state", &picker);
+        QQmlApplicationEngine engine;
+        QStringList warnings;
+        connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &errors) {
+            for (const auto &error : errors)
+                warnings << error.toString();
+        });
+        engine.rootContext()->setContextProperty("translator", &translator);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.addImageProvider("omaread", backend.createPageProvider());
+        engine.load(QUrl("qrc:/Main.qml"));
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QTRY_VERIFY(window->property("settled").toBool());
+        backend.setTransition("none");
+
+        backend.openFile(writeNotedEpub(files.path()));
+        QTRY_VERIFY(backend.isOpen());
+        QVERIFY(backend.note("omaread:0").isEmpty());
+        QVERIFY(backend.note("https://example.com/").isEmpty());
+
+        // Choosing the note's number shows the note and stays on the page.
+        auto *prose = item(window->contentItem(), "prose");
+        QVERIFY(prose);
+        QMetaObject::invokeMethod(prose, "linkActivated", Q_ARG(QString, "omaread:1#note-1"));
+        QObject *note = window->findChild<QObject *>("note");
+        QVERIFY(note);
+        QTRY_VERIFY(note->property("visible").toBool());
+        QVERIFY(note->property("html").toString().contains("emancipation"));
+        QCOMPARE(backend.section(), 0);
+        if (!qEnvironmentVariableIsEmpty("OMAREAD_GRAB")) {
+            QTest::qWait(400);
+            window->grabWindow().save(qEnvironmentVariable("OMAREAD_GRAB"));
+        }
+        // Escape closes it, still on the page.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!note->property("visible").toBool());
+        QCOMPARE(backend.section(), 0);
+        QVERIFY(backend.isOpen());
+        // Enter goes to the note itself.
+        QMetaObject::invokeMethod(prose, "linkActivated", Q_ARG(QString, "omaread:1#note-1"));
+        QTRY_VERIFY(note->property("visible").toBool());
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(!note->property("visible").toBool());
+        QCOMPARE(backend.section(), 1);
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 
