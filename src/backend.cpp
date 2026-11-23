@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "layout.h"
 #include "portalfilepicker.h"
 #include "stylesheet.h"
 
@@ -27,11 +28,6 @@ namespace {
 
 // Enough to find any recent book again without the list becoming an archive.
 constexpr int maxLibrary = 60;
-// Where typeset() records how it set the chapter, and which paragraphs it gave
-// a gap, so a new text size or setting changes only what it set itself.
-constexpr int paragraphGapProperty = QTextFormat::UserProperty + 1;
-constexpr int paragraphGapSetProperty = QTextFormat::UserProperty + 2;
-constexpr int justifyProperty = QTextFormat::UserProperty + 3;
 
 QString defaultStateDirectory() {
     QString state = qEnvironmentVariable("XDG_STATE_HOME");
@@ -53,6 +49,9 @@ Backend::Backend(const QString &stateDirectory, FilePicker *picker, QObject *par
     m_saveTimer.setSingleShot(true);
     m_saveTimer.setInterval(800);
     connect(&m_saveTimer, &QTimer::timeout, this, &Backend::save);
+    m_pageTimer.setSingleShot(true);
+    m_pageTimer.setInterval(250);
+    connect(&m_pageTimer, &QTimer::timeout, this, &Backend::countPages);
     connect(m_picker, &FilePicker::openSelected, this, &Backend::openUrl);
     connect(m_picker, &FilePicker::failed, this, [this](const QString &message) { setProblem(Problem::Picker, message); });
     readState();
@@ -61,6 +60,8 @@ Backend::Backend(const QString &stateDirectory, FilePicker *picker, QObject *par
 Backend::~Backend() {
     if (m_searchCancel)
         *m_searchCancel = true;
+    if (m_pageCancel)
+        *m_pageCancel = true;
     if (m_saveTimer.isActive())
         save();
 }
@@ -519,6 +520,7 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
     emit sectionChanged();
     emit positionChanged();
     emit libraryChanged();
+    countPages();
 }
 
 void Backend::openRecent(int index) {
@@ -554,6 +556,7 @@ void Backend::close() {
     emit sectionChanged();
     emit positionChanged();
     emit libraryChanged();
+    countPages();
 }
 
 void Backend::goTo(int section, double position) {
@@ -751,52 +754,65 @@ void Backend::loadImages(QQuickTextDocument *document) {
 }
 
 void Backend::typeset(QQuickTextDocument *document, double lineHeight, double paragraphGap, bool justify) {
-    QTextDocument *text = document ? document->textDocument() : nullptr;
-    if (!text || text->isEmpty())
+    if (document)
+        Layout::typeset(document->textDocument(), lineHeight, paragraphGap, justify,
+                        m_book && m_book->kind == Book::Kind::Markdown);
+}
+
+void Backend::setPageLayout(int width, int height, const QString &family, int pixelSize, double lineHeight,
+                            bool justify) {
+    const Layout::Page page{width, height, family, pixelSize, lineHeight, justify};
+    if (page == m_page)
         return;
-    const qreal height = lineHeight * 100;
-    // Already set this way: setting it again would only lay the chapter out twice.
-    const QTextBlockFormat first = text->firstBlock().blockFormat();
-    if (qFuzzyCompare(first.lineHeight(), height) && first.lineHeightType() == QTextBlockFormat::ProportionalHeight
-        && qFuzzyCompare(first.doubleProperty(paragraphGapProperty) + 1, paragraphGap + 1)
-        && first.hasProperty(justifyProperty) && first.boolProperty(justifyProperty) == justify)
-        return;
-    QTextBlockFormat format;
-    format.setLineHeight(height, QTextBlockFormat::ProportionalHeight);
-    format.setProperty(paragraphGapProperty, paragraphGap);
-    format.setProperty(justifyProperty, justify);
-    QTextCursor cursor(text);
-    cursor.beginEditBlock();
-    cursor.select(QTextCursor::Document);
-    cursor.mergeBlockFormat(format);
-    // Markdown's paragraphs arrive with no space between them, where HTML's
-    // carry their own margins. Give the bare ones a gap, scaled to the text
-    // size, but leave headings, lists and code as the document laid them out.
-    // Plain text is left alone: a hard-wrapped file has a block for every line.
-    const bool markdown = m_book && m_book->kind == Book::Kind::Markdown;
-    for (QTextBlock block = text->begin(); block.isValid(); block = block.next()) {
-        QTextBlockFormat own = block.blockFormat();
-        const bool code = own.hasProperty(QTextFormat::BlockCodeFence) || own.nonBreakableLines();
-        bool changed = false;
-        const bool bare = markdown && own.headingLevel() == 0 && !block.textList() && !code && own.topMargin() == 0
-                          && (own.bottomMargin() == 0 || own.boolProperty(paragraphGapSetProperty));
-        if (bare) {
-            own.setBottomMargin(paragraphGap);
-            own.setProperty(paragraphGapSetProperty, true);
-            changed = true;
-        }
-        // Justified or ragged is the reader's choice for running text, as it
-        // is on any e-reader; text the book centers or sets right stays so.
-        const Qt::Alignment horizontal = own.alignment() & Qt::AlignHorizontal_Mask;
-        const bool running = own.headingLevel() == 0 && !code
-                             && (!own.hasProperty(QTextFormat::BlockAlignment) || horizontal == Qt::AlignLeft
-                                 || horizontal == Qt::AlignLeading || horizontal == Qt::AlignJustify);
-        if (running) {
-            own.setAlignment(justify ? Qt::AlignJustify : Qt::AlignLeading);
-            changed = true;
-        }
-        if (changed)
-            QTextCursor(block).setBlockFormat(own);
+    m_page = page;
+    // Waits for a resize or a run of key presses to settle before laying out
+    // the whole book again.
+    m_pageTimer.start();
+}
+
+void Backend::countPages() {
+    if (m_pageCancel)
+        *m_pageCancel = true;
+    const int generation = ++m_pageGeneration;
+    if (!m_pages.isEmpty()) {
+        m_pages.clear();
+        m_pagesBefore.clear();
+        emit pagesChanged();
     }
-    cursor.endEditBlock();
+    if (!m_book || m_book->paged() || m_page.width <= 0 || m_page.height <= 0)
+        return;
+    m_pageCancel = std::make_shared<std::atomic_bool>(false);
+    auto *watcher = new QFutureWatcher<QList<QList<double>>>(this);
+    connect(watcher, &QFutureWatcher<QList<QList<double>>>::finished, this, [this, watcher, generation] {
+        watcher->deleteLater();
+        if (generation != m_pageGeneration)
+            return;
+        m_pages = watcher->result();
+        m_pagesBefore.clear();
+        int before = 0;
+        for (const auto &section : std::as_const(m_pages)) {
+            m_pagesBefore << before;
+            before += int(section.size());
+        }
+        emit pagesChanged();
+    });
+    watcher->setFuture(QtConcurrent::run([book = m_book, page = m_page, cancel = m_pageCancel] {
+        return Layout::paginate(*book, page, cancel.get());
+    }));
+}
+
+int Backend::pageCount() const {
+    int count = 0;
+    for (const auto &section : m_pages)
+        count += int(section.size());
+    return count;
+}
+
+int Backend::pageAt(int section, double contentY) const {
+    if (section < 0 || section >= m_pages.size() || m_pages[section].isEmpty())
+        return 0;
+    const QList<double> &starts = m_pages[section];
+    // The last page that starts at or above the top of the view.
+    const auto it = std::upper_bound(starts.begin(), starts.end(), contentY + 1);
+    return m_pagesBefore.value(section) + std::max(1, int(it - starts.begin()));
 }

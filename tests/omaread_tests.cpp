@@ -1264,6 +1264,50 @@ private slots:
         QCOMPARE(view->property("contentY").toDouble(), 0.0);
     }
 
+    void windowCountsPagesAsSpaceTurnsThem() {
+        QTemporaryDir dir, files;
+        Translator translator(dir.path() + "/language");
+        Theme theme(dir.path());
+        FakePicker picker;
+        Backend backend(dir.path() + "/state", &picker);
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("translator", &translator);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.addImageProvider("omaread", backend.createPageProvider());
+        engine.load(QUrl("qrc:/Main.qml"));
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QTRY_VERIFY(window->property("settled").toBool());
+        backend.setTransition("none");
+
+        // Paragraphs of different lengths, so pages break inside them.
+        QString markdown = "## One\n";
+        for (int i = 0; i < 120; ++i)
+            markdown += QString("Paragraph %1. ").arg(i) + QString("Words run on here. ").repeated(1 + i % 7) + "\n\n";
+        markdown += "## Two\nThe end.\n";
+        backend.openFile(writeText(files.filePath("pages.md"), markdown.toUtf8()));
+        QTRY_VERIFY(backend.isOpen());
+        QTRY_VERIFY(backend.pageCount() > 5);
+        auto *view = item(window->contentItem(), "view");
+        // Every Space is one page on, and the chapter's last screen its last page.
+        int page = backend.pageAt(0, view->property("contentY").toDouble());
+        QCOMPARE(page, 1);
+        while (backend.section() == 0) {
+            const double before = view->property("contentY").toDouble();
+            QTest::keyClick(window, Qt::Key_Space);
+            if (backend.section() != 0)
+                break;
+            QTRY_VERIFY(view->property("contentY").toDouble() > before);
+            QCOMPARE(backend.pageAt(0, view->property("contentY").toDouble()), ++page);
+        }
+        QCOMPARE(page, backend.pageCount() - 1);
+        QCOMPARE(backend.pageAt(1, 0), backend.pageCount());
+    }
+
     void windowShowsANoteInPlace() {
         QTemporaryDir dir, files;
         Translator translator(dir.path() + "/language");
@@ -1403,7 +1447,9 @@ private slots:
         QCOMPARE(where->property("text").toString(), QString("10 min left in chapter"));
         // The chapter isn't named when it only repeats the book's title.
         QCOMPARE(item(window->contentItem(), "chapter")->property("text").toString(), QString());
-        const QStringList shown = {"10 min left in book", "Section 1 of 3", "0%", "", "10 min left in chapter"};
+        QTRY_VERIFY(backend.pageCount() > 0);
+        const QStringList shown = {"10 min left in book", "Page 1 of " + QString::number(backend.pageCount()), "0%", "",
+                                   "10 min left in chapter"};
         for (const QString &text : shown) {
             QTest::keyClick(window, Qt::Key_P);
             QCOMPARE(where->property("text").toString(), text);

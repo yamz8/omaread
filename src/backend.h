@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "book.h"
+#include "layout.h"
 #include "pageprovider.h"
 
 class FilePicker;
@@ -80,6 +81,9 @@ class Backend : public QObject {
     Q_PROPERTY(QString chapterLabel READ chapterLabel NOTIFY sectionChanged)
     // Minutes left at the reader's pace, in this section and in the whole
     // book's text; -1 when the book has no words to count, as a PDF or comic.
+    // The book's pages at the window's size and the reading settings, as Space
+    // turns them; 0 while they are being counted, and for a PDF or comic.
+    Q_PROPERTY(int pageCount READ pageCount NOTIFY pagesChanged)
     Q_PROPERTY(int minutesLeftInChapter READ minutesLeftInChapter NOTIFY positionChanged)
     Q_PROPERTY(int minutesLeftInBook READ minutesLeftInBook NOTIFY positionChanged)
     // The reader's pace, learned from how long a screen takes to read.
@@ -157,6 +161,7 @@ public:
     void setTransition(const QString &transition);
     static QStringList transitions() { return {"slide", "flip", "cover", "fade", "none"}; }
     QString chapterLabel() const;
+    int pageCount() const;
     int minutesLeftInChapter() const;
     int minutesLeftInBook() const;
     double wordsPerMinute() const { return m_wordsPerMinute; }
@@ -211,6 +216,13 @@ public:
     // size, the gap after a Markdown paragraph, and justified or ragged.
     Q_INVOKABLE void typeset(QQuickTextDocument *document, double lineHeight, double paragraphGap = 0,
                              bool justify = false);
+    // What the window shows a flowing book's text in. The book's pages are
+    // counted for it in the background, again whenever it changes.
+    Q_INVOKABLE void setPageLayout(int width, int height, const QString &family, int pixelSize, double lineHeight,
+                                   bool justify);
+    // The page at a scroll offset in a section, counting from the book's
+    // first, or 0 while the pages are still being counted.
+    Q_INVOKABLE int pageAt(int section, double contentY) const;
     // Puts a chapter's images into its document as it arrives. Left to the
     // TextEdit, an image it hasn't drawn before loads late and is never shown.
     Q_INVOKABLE void loadImages(QQuickTextDocument *document);
@@ -234,6 +246,7 @@ signals:
     // Just before new text: the window stops taking its scroll for the
     // reader's place until the new text is laid out and the place restored.
     void textAboutToChange();
+    void pagesChanged();
     void targetChanged();
     void searchChanged();
     void hitChanged();
@@ -283,6 +296,13 @@ private:
     int m_target = -1;
     QString m_text;
     QColor m_ink;
+    Layout::Page m_page;
+    QList<QList<double>> m_pages;
+    QList<int> m_pagesBefore;
+    QTimer m_pageTimer;
+    int m_pageGeneration = 0;
+    std::shared_ptr<std::atomic_bool> m_pageCancel;
+    void countPages();
     QVariantList m_links;
 
     QString m_query;

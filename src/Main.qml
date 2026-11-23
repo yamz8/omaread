@@ -120,6 +120,11 @@ ApplicationWindow {
     function scroll(dy) {
         view.contentY = Math.max(0, Math.min(view.contentY + dy, view.contentHeight - view.height))
     }
+    // What the text is laid out in, so the backend counts the book's pages
+    // the way they are shown, again whenever any of it changes.
+    readonly property var pageLayout: [prose.width, view.height, prose.font.family, readingSize, lineHeight, backend.justify]
+    onPageLayoutChanged: backend.setPageLayout(prose.width, view.height, prose.font.family, readingSize, lineHeight, backend.justify)
+
     // What the footer's right side shows. A PDF or comic has no words to time,
     // so it shows pages or the percent read.
     readonly property var progressModes: backend.paged ? ["page", "percent", "none"]
@@ -150,7 +155,9 @@ ApplicationWindow {
         case "none": return ""
         }
         if (!backend.paged)
-            return qsTr("Section %1 of %2").arg(number(backend.section + 1)).arg(number(backend.sectionCount))
+            return backend.pageCount > 0
+                ? qsTr("Page %1 of %2").arg(number(backend.pageAt(backend.section, view.contentY))).arg(number(backend.pageCount))
+                : qsTr("Counting pages…")
         if (shownPages.length > 1)
             return qsTr("Pages %1–%2 of %3").arg(number(backend.section + 1)).arg(number(backend.section + 2)).arg(number(backend.sectionCount))
         return qsTr("Page %1 of %2").arg(number(backend.section + 1)).arg(number(backend.sectionCount))
