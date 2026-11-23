@@ -13,6 +13,9 @@ Item {
     // The area dragged across the page, as fractions of it; empty for none.
     property rect selected: Qt.rect(0, 0, 0, 0)
     readonly property bool hasSelection: selected.width > 0 && selected.height > 0
+    // In panel view, the panel being read, as fractions of the page: the rest
+    // of the page is dimmed around it. Empty for none.
+    property rect spotlight: Qt.rect(0, 0, 0, 0)
 
     // A link on the page: another page of the book, or a web address.
     signal follow(int target, string url)
@@ -92,6 +95,29 @@ Item {
             height: modelData.height * sheet.height
             cursorShape: Qt.PointingHandCursor
             onClicked: sheet.follow(modelData.target, modelData.url)
+        }
+    }
+
+    // Everything but the panel being read, dimmed in the window's color.
+    Item {
+        id: shade
+        anchors.fill: parent
+        visible: sheet.spotlight.width > 0
+        readonly property real edgeLeft: sheet.spotlight.x * sheet.width
+        readonly property real edgeTop: sheet.spotlight.y * sheet.height
+        readonly property real edgeRight: (sheet.spotlight.x + sheet.spotlight.width) * sheet.width
+        readonly property real edgeBottom: (sheet.spotlight.y + sheet.spotlight.height) * sheet.height
+        Repeater {
+            model: [Qt.rect(0, 0, 1, 0), Qt.rect(0, 1, 1, 0), Qt.rect(0, 2, 0, 0), Qt.rect(1, 2, 0, 0)]
+            delegate: Rectangle {
+                required property var modelData
+                x: modelData.y === 2 ? (modelData.x === 0 ? 0 : shade.edgeRight) : 0
+                y: modelData.y === 0 ? 0 : modelData.y === 1 ? shade.edgeBottom : shade.edgeTop
+                width: modelData.y === 2 ? (modelData.x === 0 ? shade.edgeLeft : sheet.width - shade.edgeRight) : sheet.width
+                height: modelData.y === 0 ? shade.edgeTop : modelData.y === 1 ? sheet.height - shade.edgeBottom : shade.edgeBottom - shade.edgeTop
+                color: theme.background
+                opacity: 0.82
+            }
         }
     }
 }

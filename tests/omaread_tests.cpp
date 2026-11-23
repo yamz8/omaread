@@ -321,6 +321,29 @@ QString writeNotedEpub(const QString &folder) {
         ? path : QString();
 }
 
+// A comic page laid out in panels: a wide one on top, two side by side below,
+// on white with gutters between, as a comic page is drawn.
+QImage panelPage() {
+    QImage page(600, 900, QImage::Format_RGB32);
+    page.fill(Qt::white);
+    QPainter painter(&page);
+    painter.setPen(QPen(Qt::black, 6));
+    painter.setBrush(QColor("#e98a5a"));
+    painter.drawRect(30, 30, 540, 400);
+    painter.setBrush(QColor("#9bc4a8"));
+    painter.drawRect(30, 470, 255, 400);
+    painter.setBrush(QColor("#c7a6e0"));
+    painter.drawRect(315, 470, 255, 400);
+    return page;
+}
+QByteArray pngOf(const QImage &image) {
+    QByteArray bytes;
+    QBuffer buffer(&bytes);
+    buffer.open(QIODevice::WriteOnly);
+    image.save(&buffer, "PNG");
+    return bytes;
+}
+
 QString writeText(const QString &path, const QByteArray &text) {
     return write(path, text) ? path : QString();
 }
@@ -1007,6 +1030,23 @@ private slots:
         QVERIFY(!again.rightToLeft());
     }
 
+    void comicPagesAreCutIntoPanels() {
+        const QList<QRectF> panels = Book::findPanels(panelPage(), false);
+        QCOMPARE(panels.size(), 3);
+        // The wide one first, then left to right.
+        QVERIFY(panels[0].width() > 0.85 && panels[0].y() < 0.1);
+        QVERIFY(panels[1].x() < 0.1 && panels[1].y() > 0.45);
+        QVERIFY(panels[2].x() > 0.5 && panels[2].y() > 0.45);
+        // Read right to left, the lower two the other way round.
+        const QList<QRectF> manga = Book::findPanels(panelPage(), true);
+        QVERIFY(manga[1].x() > 0.5);
+        QVERIFY(manga[2].x() < 0.1);
+        // A page that is one picture has no panels to step through.
+        QImage cover(600, 900, QImage::Format_RGB32);
+        cover.fill(QColor("#2b4c7e"));
+        QVERIFY(Book::findPanels(cover, false).isEmpty());
+    }
+
     void backendRemembersHowTextIsSet() {
         QTemporaryDir state;
         FakePicker picker;
@@ -1628,6 +1668,61 @@ private slots:
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_VERIFY(!contents->property("visible").toBool());
         QCOMPARE(backend.target(), 8);
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    }
+
+    void windowReadsAComicPanelByPanel() {
+        QTemporaryDir dir, files;
+        Translator translator(dir.path() + "/language");
+        Theme theme(dir.path());
+        FakePicker picker;
+        Backend backend(dir.path() + "/state", &picker);
+        QQmlApplicationEngine engine;
+        QStringList warnings;
+        connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &errors) {
+            for (const auto &error : errors)
+                warnings << error.toString();
+        });
+        engine.rootContext()->setContextProperty("translator", &translator);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.addImageProvider("omaread", backend.createPageProvider());
+        engine.load(QUrl("qrc:/Main.qml"));
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QTRY_VERIFY(window->property("settled").toBool());
+        backend.setTransition("none");
+        const QString path = files.filePath("panels.cbz");
+        QVERIFY(writeZip(path, {{"1.png", pngOf(panelPage())}, {"2.png", pngOf(panelPage())}}));
+        backend.openFile(path);
+        QTRY_VERIFY(backend.isOpen());
+        // V reads panel by panel: zoomed in on the first, then on through them,
+        // and on to the next page's first.
+        QTest::keyClick(window, Qt::Key_V);
+        QVERIFY(window->property("panelView").toBool());
+        QTRY_COMPARE(window->property("panels").toList().size(), 3);
+        QVERIFY(window->property("zoom").toDouble() > 1);
+        auto *where = item(window->contentItem(), "where");
+        QCOMPARE(where->property("text").toString(), QString("Panel 1 of 3  ·  Page 1 of 2"));
+        QTest::keyClick(window, Qt::Key_Space);
+        QCOMPARE(window->property("panelIndex").toInt(), 1);
+        QTest::keyClick(window, Qt::Key_Space);
+        QTest::keyClick(window, Qt::Key_Space);
+        QCOMPARE(backend.section(), 1);
+        QTRY_COMPARE(window->property("panels").toList().size(), 3);
+        QCOMPARE(window->property("panelIndex").toInt(), 0);
+        // Back from a page's first panel is the last panel of the page before.
+        QTest::keyClick(window, Qt::Key_Space, Qt::ShiftModifier);
+        QCOMPARE(backend.section(), 0);
+        QTRY_COMPARE(window->property("panelIndex").toInt(), 2);
+        // Escape shows whole pages again.
+        QTest::keyClick(window, Qt::Key_Escape);
+        QVERIFY(!window->property("panelView").toBool());
+        QCOMPARE(window->property("zoom").toDouble(), 1.0);
+        QVERIFY(backend.isOpen());
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 

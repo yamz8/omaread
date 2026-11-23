@@ -94,6 +94,8 @@ class Backend : public QObject {
     // Whether the open book is read from right to left, as manga are: pages
     // side by side start on the right, and the arrows turn the other way.
     Q_PROPERTY(bool rightToLeft READ rightToLeft WRITE setRightToLeft NOTIFY bookChanged)
+    // Counts up whenever a page's panels have been found, for bindings to ask again.
+    Q_PROPERTY(int panelsFound READ panelsFound NOTIFY panelsChanged)
     // The open book's bookmarks, in reading order, each {section, position,
     // text, chapter}: the place, the first words there, and its chapter.
     Q_PROPERTY(QVariantList bookmarks READ bookmarks NOTIFY bookmarksChanged)
@@ -193,6 +195,10 @@ public:
     int pageCount() const;
     QVariantList bookmarks() const;
     bool rightToLeft() const;
+    int panelsFound() const { return m_panelsFound; }
+    // A page's panels, each {x, y, width, height} as fractions of it, in reading
+    // order. The first ask finds them in the background, and says so after.
+    Q_INVOKABLE QVariantList panelsOf(int page);
     void setRightToLeft(bool rightToLeft);
     QVariantList highlights() const;
     bool canGoBack() const { return !m_back.isEmpty(); }
@@ -341,6 +347,7 @@ signals:
     void historyChanged();
     void bookmarksChanged();
     void highlightsChanged();
+    void panelsChanged();
     void lookedUp(const QString &word, const QString &definition);
     // The book open was just read to its end.
     void bookFinished();
@@ -412,6 +419,9 @@ private:
         double position = 0;
     };
     QList<Place> m_back, m_forward;
+    QHash<int, QList<QRectF>> m_panels;
+    QSet<int> m_panelsAsked;
+    int m_panelsFound = 0;
     mutable bool m_painting = false;
     // Covers, as small images in a cache, and the book whose cover is being made.
     QString m_coverDirectory;

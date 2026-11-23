@@ -102,6 +102,13 @@ public:
     // each chapter's name, to keep or share.
     QString notesMarkdown(const QList<Highlight> &highlights) const;
 
+    // A comic page's panels, as fractions of the page, in reading order: rows
+    // from the top, and in a row from the left, or from the right when the
+    // book reads right to left. Empty when the page isn't cut into panels.
+    QList<QRectF> panels(int page, bool rightToLeft) const;
+    // The same, for a page already drawn.
+    static QList<QRectF> findPanels(const QImage &page, bool rightToLeft);
+
     // The book's cover, no taller than height: an EPUB's cover image, or a
     // PDF's or comic's first page. Null for a book without one.
     QImage cover(int height) const;

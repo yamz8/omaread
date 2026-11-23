@@ -614,6 +614,8 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
     emit historyChanged();
     emit bookmarksChanged();
     emit highlightsChanged();
+    m_panels.clear();
+    m_panelsAsked.clear();
     emit bookChanged();
     updateText();
     emit sectionChanged();
@@ -830,6 +832,8 @@ void Backend::close() {
     emit historyChanged();
     emit bookmarksChanged();
     emit highlightsChanged();
+    m_panels.clear();
+    m_panelsAsked.clear();
     emit bookChanged();
     updateText();
     emit sectionChanged();
@@ -903,11 +907,41 @@ bool Backend::rightToLeft() const {
     return m_book->rightToLeft;
 }
 
+QVariantList Backend::panelsOf(int page) {
+    QVariantList list;
+    if (!m_book || !m_book->paged())
+        return list;
+    if (m_panels.contains(page)) {
+        for (const QRectF &r : m_panels.value(page))
+            list << QVariantMap{{"x", r.x()}, {"y", r.y()}, {"width", r.width()}, {"height", r.height()}};
+        return list;
+    }
+    if (m_panelsAsked.contains(page))
+        return list;
+    m_panelsAsked.insert(page);
+    auto *watcher = new QFutureWatcher<QList<QRectF>>(this);
+    connect(watcher, &QFutureWatcher<QList<QRectF>>::finished, this, [this, watcher, page, book = m_book] {
+        watcher->deleteLater();
+        if (book != m_book)
+            return;
+        m_panels.insert(page, watcher->result());
+        ++m_panelsFound;
+        emit panelsChanged();
+    });
+    watcher->setFuture(QtConcurrent::run([book = m_book, page, rtl = rightToLeft()] { return book->panels(page, rtl); }));
+    return list;
+}
+
 void Backend::setRightToLeft(bool rightToLeft) {
     Entry *entry = openEntry();
     if (!entry || rightToLeft == this->rightToLeft())
         return;
     entry->rightToLeft = rightToLeft ? 1 : 0;
+    // Panels are read in the other order now.
+    m_panels.clear();
+    m_panelsAsked.clear();
+    ++m_panelsFound;
+    emit panelsChanged();
     emit bookChanged();
     scheduleSave();
 }

@@ -70,7 +70,7 @@ ApplicationWindow {
     property bool finding: false
     property string toast: ""
 
-    readonly property int step: backend.paged && backend.spread ? 2 : 1
+    readonly property int step: backend.paged && backend.spread && !panelView ? 2 : 1
     // A paged book read right to left, as manga are: pages side by side and
     // page turns go the other way.
     readonly property bool bookRightToLeft: backend.paged && backend.rightToLeft
@@ -78,7 +78,7 @@ ApplicationWindow {
     // the book reads the other way.
     readonly property int turnSide: turnDirection * (bookRightToLeft ? -1 : 1)
     readonly property var shownPages: !backend.paged ? []
-        : backend.spread && backend.section + 1 < backend.sectionCount ? [backend.section, backend.section + 1]
+        : backend.spread && !panelView && backend.section + 1 < backend.sectionCount ? [backend.section, backend.section + 1]
         : [backend.section]
     readonly property string tint: backend.tintPages
         ? "/" + String(theme.background).slice(1, 7) + "/" + String(theme.foreground).slice(1, 7) : ""
@@ -104,9 +104,70 @@ ApplicationWindow {
             backend.noteReading((Date.now() - screenStarted) / 1000, Math.min(1, view.height / view.contentHeight))
         screenStarted = Date.now()
     }
+    // Panel view: a comic read a panel at a time, each zoomed to fill the
+    // window, then on to the next page's first panel. A page without panels
+    // is shown whole.
+    property bool panelView: false
+    property int panelIndex: 0
+    property bool panelFromEnd: false
+    readonly property var panels: {
+        void backend.panelsFound
+        return panelView && backend.paged ? backend.panelsOf(backend.section) : []
+    }
+    onPanelsChanged: if (panelView) {
+        if (panelFromEnd)
+            panelIndex = Math.max(0, panels.length - 1)
+        panelFromEnd = false
+        panelIndex = Math.min(panelIndex, Math.max(0, panels.length - 1))
+        framePanel()
+    }
+    function setPanelView(on) {
+        panelView = on && backend.paged
+        panelIndex = 0
+        if (!panelView) {
+            zoom = 1
+            Qt.callLater(restore)
+        } else {
+            framePanel()
+        }
+        say(panelView ? qsTr("Panel by panel") : qsTr("Whole pages"))
+    }
+    // Zooms the view onto the panel, as large as fits with a little room around.
+    function framePanel() {
+        if (!panelView)
+            return
+        if (panels.length === 0) {
+            zoom = 1
+            view.contentX = Math.max(0, (view.contentWidth - view.width) / 2)
+            view.contentY = 0
+            return
+        }
+        const r = panels[panelIndex], a = aspect(backend.section), pad = 24, m = spreadRow.margin
+        const fitted = spreadRow.fitted
+        const z = Math.max(1, Math.min(8, Math.min((view.width - 2 * pad) / (r.width * fitted * a),
+                                                     (view.height - 2 * pad) / (r.height * fitted))))
+        restoring = true
+        zoom = z
+        const ph = fitted * z, pw = ph * a
+        const rowX = Math.max(m, (view.width - pw) / 2)
+        const cx = rowX + (r.x + r.width / 2) * pw, cy = m + (r.y + r.height / 2) * ph
+        view.contentX = Math.max(0, Math.min(cx - view.width / 2, Math.max(0, pw + 2 * m - view.width)))
+        view.contentY = Math.max(0, Math.min(cy - view.height / 2, Math.max(0, ph + 2 * m - view.height)))
+        restoring = false
+    }
     function forward() {
         letLinkGo()
         noteScreenRead()
+        if (panelView && panels.length > 0 && panelIndex < panels.length - 1) {
+            turn(1, () => { ++panelIndex; framePanel() })
+            return
+        }
+        if (panelView) {
+            panelIndex = 0
+            if (backend.section + 1 < backend.sectionCount)
+                jump(backend.section + 1, 0)
+            return
+        }
         if (view.contentY + view.height >= view.contentHeight - 2) {
             if (backend.section + step < backend.sectionCount)
                 jump(backend.section + step, 0)
@@ -119,6 +180,18 @@ ApplicationWindow {
     function backward() {
         letLinkGo()
         screenStarted = Date.now()
+        if (panelView && panels.length > 0 && panelIndex > 0) {
+            turn(-1, () => { --panelIndex; framePanel() })
+            return
+        }
+        if (panelView) {
+            if (backend.section > 0) {
+                panelFromEnd = true
+                panelIndex = 0
+                jump(backend.section - 1, 0)
+            }
+            return
+        }
         if (view.contentY <= 1) {
             if (backend.section > 0)
                 jump(Math.max(0, backend.section - step), 1)
@@ -226,6 +299,9 @@ ApplicationWindow {
             return backend.pageCount > 0
                 ? qsTr("Page %1 of %2").arg(number(backend.pageAt(backend.section, view.contentY))).arg(number(backend.pageCount))
                 : qsTr("Counting pages…")
+        if (panelView && panels.length > 1)
+            return qsTr("Panel %1 of %2").arg(number(panelIndex + 1)).arg(number(panels.length)) + "  ·  "
+                   + qsTr("Page %1 of %2").arg(number(backend.section + 1)).arg(number(backend.sectionCount))
         if (shownPages.length > 1)
             return qsTr("Pages %1–%2 of %3").arg(number(backend.section + 1)).arg(number(backend.section + 2)).arg(number(backend.sectionCount))
         return qsTr("Page %1 of %2").arg(number(backend.section + 1)).arg(number(backend.sectionCount))
@@ -339,6 +415,11 @@ ApplicationWindow {
         onTriggered: if (win.pendingTurn) { const waiting = win.pendingTurn; win.pendingTurn = null; waiting.action() }
     }
     function restore() {
+        // In panel view, the place is the panel.
+        if (panelView) {
+            framePanel()
+            return
+        }
         restoring = true
         view.contentY = backend.position * Math.max(0, view.contentHeight - view.height)
         view.contentX = Math.max(0, (view.contentWidth - view.width) / 2)
@@ -528,6 +609,8 @@ ApplicationWindow {
     function leave() {
         if (chosenLink)
             letLinkGo()
+        else if (panelView)
+            setPanelView(false)
         else if (backend.error !== "")
             backend.dismissError()
         else if (finding)
@@ -545,7 +628,7 @@ ApplicationWindow {
         // Until the new text is laid out and the view moved to its place, the
         // view still scrolled for the old one isn't the reader moving: taken
         // for it, a jump to a chapter's start landed as far down as the place left.
-        function onBookChanged() { win.restoring = true; win.zoom = 1; win.finding = false; win.screenStarted = Date.now(); Qt.callLater(win.restore) }
+        function onBookChanged() { win.restoring = true; win.panelView = false; win.zoom = 1; win.finding = false; win.screenStarted = Date.now(); Qt.callLater(win.restore) }
         function onSectionChanged() { win.restoring = true; win.clearSelections(); Qt.callLater(win.restore) }
         // New text, for a new section or a new text size: its layout moves the
         // view, which mustn't move the reader's place.
@@ -569,6 +652,7 @@ ApplicationWindow {
     // The arrows turn the way the book reads: a manga's next page is to the left.
     Shortcut { sequence: "Right"; enabled: win.reading; onActivated: win.bookRightToLeft ? win.backward() : win.forward() }
     Shortcut { sequence: "Left"; enabled: win.reading; onActivated: win.bookRightToLeft ? win.forward() : win.backward() }
+    Shortcut { sequence: "V"; enabled: win.reading && backend.paged; onActivated: win.setPanelView(!win.panelView) }
     Shortcut {
         sequence: "R"
         enabled: win.reading && backend.paged
@@ -1053,6 +1137,10 @@ ApplicationWindow {
                                         page: modelData
                                         tint: win.tint
                                         highlight: theme.accent
+                                        spotlight: win.panelView && win.panels.length > 0 && modelData === backend.section
+                                                   ? Qt.rect(win.panels[win.panelIndex].x, win.panels[win.panelIndex].y,
+                                                             win.panels[win.panelIndex].width, win.panels[win.panelIndex].height)
+                                                   : Qt.rect(0, 0, 0, 0)
                                         width: Math.round(spreadRow.pageHeight * win.aspect(modelData))
                                         height: Math.round(spreadRow.pageHeight)
                                         onFollow: (target, url) => { if (target >= 0) { win.markJump(); win.jump(target, 0) } else Qt.openUrlExternally(url) }
@@ -2628,6 +2716,7 @@ ApplicationWindow {
                     { keys: "N  Shift+N", action: qsTr("Next or previous match") },
                     { keys: "Ctrl+C", action: qsTr("Copy the selected words") },
                     { keys: "+  −  0", action: qsTr("Larger, smaller, or reset text and pages") },
+                    { keys: "V", action: qsTr("Read a comic panel by panel, or whole pages") },
                     { keys: "R", action: qsTr("Read a comic or PDF right to left, as manga, or left to right") },
                     { keys: "W", action: qsTr("Fit pages to the width or the window") },
                     { keys: "D", action: qsTr("One page or two side by side") },

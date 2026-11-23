@@ -327,6 +327,97 @@ QString Book::notesMarkdown(const QList<Highlight> &highlights) const {
     return out;
 }
 
+QList<QRectF> Book::panels(int page, bool rightToLeft) const {
+    if (!paged() || page < 0 || page >= aspects.size())
+        return {};
+    return findPanels(renderPage(page, QSize(4000, 900)), rightToLeft);
+}
+
+// The page is cut where a whole row, then a whole column, is the gutters'
+// color, again inside each piece, a few levels down: how comic pages are
+// laid out, in strips of panels.
+QList<QRectF> Book::findPanels(const QImage &source, bool rightToLeft) {
+    if (source.isNull() || source.width() < 40 || source.height() < 40)
+        return {};
+    const QImage image = source.convertToFormat(QImage::Format_Grayscale8);
+    const int width = image.width(), height = image.height();
+    // The gutters' color: what most of the page's edge is.
+    QList<int> edge;
+    for (int x = 0; x < width; x += 2) {
+        edge << image.constScanLine(1)[x] << image.constScanLine(height - 2)[x];
+    }
+    for (int y = 0; y < height; y += 2) {
+        edge << image.constScanLine(y)[1] << image.constScanLine(y)[width - 2];
+    }
+    std::sort(edge.begin(), edge.end());
+    const int ground = edge[edge.size() / 2];
+    auto ink = [&](int x, int y) { return std::abs(int(image.constScanLine(y)[x]) - ground) > 48; };
+
+    struct Box {
+        int left, top, right, bottom;    // right and bottom exclusive
+    };
+    const int gap = std::max(4, height / 80);
+    // The stretches along one axis of a box that have ink, split where a run of
+    // empty lines at least gap long lies between them.
+    auto stretches = [&](const Box &box, bool rows) {
+        const int from = rows ? box.top : box.left, to = rows ? box.bottom : box.right;
+        const int across = rows ? box.right - box.left : box.bottom - box.top;
+        const int allowed = std::max(1, across / 160);
+        QList<std::pair<int, int>> out;
+        int start = -1, empty = 0;
+        for (int i = from; i < to; ++i) {
+            int count = 0;
+            for (int j = rows ? box.left : box.top; j < (rows ? box.right : box.bottom) && count <= allowed; ++j)
+                count += rows ? ink(j, i) : ink(i, j);
+            if (count > allowed) {
+                if (start < 0)
+                    start = i;
+                else if (empty >= gap) {
+                    out << std::pair{start, i - empty};
+                    start = i;
+                }
+                empty = 0;
+            } else if (start >= 0) {
+                ++empty;
+            }
+        }
+        if (start >= 0)
+            out << std::pair{start, to - empty};
+        return out;
+    };
+    QList<Box> found;
+    std::function<void(const Box &, int)> cut = [&](const Box &box, int depth) {
+        const auto rows = stretches(box, true);
+        if (depth < 4 && rows.size() > 1) {
+            for (const auto &[top, bottom] : rows)
+                cut({box.left, top, box.right, bottom}, depth + 1);
+            return;
+        }
+        auto columns = stretches(box, false);
+        if (depth < 4 && columns.size() > 1) {
+            if (rightToLeft)
+                std::reverse(columns.begin(), columns.end());
+            for (const auto &[left, right] : columns)
+                cut({left, box.top, right, box.bottom}, depth + 1);
+            return;
+        }
+        const Box inked{columns.isEmpty() ? box.left : columns.first().first, rows.isEmpty() ? box.top : rows.first().first,
+                        columns.isEmpty() ? box.right : columns.last().second, rows.isEmpty() ? box.bottom : rows.last().second};
+        if (inked.right > inked.left && inked.bottom > inked.top)
+            found << inked;
+    };
+    cut({0, 0, width, height}, 0);
+    // Specks between panels aren't panels.
+    found.removeIf([&](const Box &b) { return (b.right - b.left) * (b.bottom - b.top) < width * height / 60; });
+    if (found.size() < 2)
+        return {};
+    QList<QRectF> panels;
+    for (const Box &b : std::as_const(found))
+        panels << QRectF(double(b.left) / width, double(b.top) / height, double(b.right - b.left) / width,
+                         double(b.bottom - b.top) / height);
+    return panels;
+}
+
 QImage Book::cover(int height) const {
     QImage image;
     switch (kind) {

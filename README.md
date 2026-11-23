@@ -54,6 +54,7 @@ omaread skill install               # teach coding agents to use these commands
 | `N` `Shift+N` | Next or previous match |
 | `Ctrl+C` | Copy the selected words |
 | `+` `−` `0` | Larger, smaller, or reset text and pages |
+| `V` | Read a comic panel by panel, each zoomed to fill the window, or whole pages |
 | `R` | Read a comic or PDF right to left, as manga, or left to right |
 | `W` | Fit pages to the width or the window |
 | `D` | One page or two side by side |
@@ -83,7 +84,7 @@ cmake --install build --prefix ~/.local   # put it in the app launcher
 
 - **PDF**: drawn page by page with poppler, as Signed draws them, along with its outline, links and words to search and copy.
 - **EPUB**: each chapter is laid out as text in the theme's colors and your text size, the way the book itself sets it: first-line indents, small capitals, centered headings and scene breaks, epigraphs, and the indented lines of poems all come from the book's own stylesheet. Its colors, line height and typeface are left out, so every book follows the theme and the reading settings, and its images are scaled to fit. Links between chapters, and to places inside them, are followed inside the reader, and a footnote or endnote opens over the bottom of the page when its number is chosen, so reading never leaves the page; Enter goes to the note itself. The table of contents comes from the EPUB 3 nav document, or from the EPUB 2 NCX.
-- **Comics**: the images in a ZIP, RAR, 7z or tar archive, in page-number order. A `ComicInfo.xml` gives the series, number and writer, and a manga marked as read right to left is read that way; `R` changes it, for that book.
+- **Comics**: the images in a ZIP, RAR, 7z or tar archive, in page-number order. A `ComicInfo.xml` gives the series, number and writer, and a manga marked as read right to left is read that way; `R` changes it, for that book. `V` reads panel by panel: each panel, found by the gutters between them, fills the window with the rest of the page dimmed, and `Space` goes on to the next.
 - **Markdown**: one section for each first- and second-level heading, and those headings make up the table of contents.
 - **Text**: split into sections of about 20,000 characters, always between paragraphs.
 
