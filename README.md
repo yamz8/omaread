@@ -42,7 +42,8 @@ omaread skill install               # teach coding agents to use these commands
 | `G` | Go to a page or section |
 | `Tab` `Shift+Tab` `Enter` | Choose a link or note on the page, and open it |
 | `Backspace` `Shift+Backspace` | Back to where a jump left, and on again |
-| `T` | Table of contents |
+| `T` | Contents, with page numbers, and bookmarks (`Tab` switches) |
+| `B` | Bookmark the page, or remove its bookmark |
 | `/` `Ctrl+F` | Find in the book |
 | `N` `Shift+N` | Next or previous match |
 | `Ctrl+C` | Copy the selected words |

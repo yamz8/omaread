@@ -89,6 +89,9 @@ class Backend : public QObject {
     // The book's pages at the window's size and the reading settings, as Space
     // turns them; 0 while they are being counted, and for a PDF or comic.
     Q_PROPERTY(int pageCount READ pageCount NOTIFY pagesChanged)
+    // The open book's bookmarks, in reading order, each {section, position,
+    // text, chapter}: the place, the first words there, and its chapter.
+    Q_PROPERTY(QVariantList bookmarks READ bookmarks NOTIFY bookmarksChanged)
     Q_PROPERTY(bool canGoBack READ canGoBack NOTIFY historyChanged)
     Q_PROPERTY(bool canGoForward READ canGoForward NOTIFY historyChanged)
     Q_PROPERTY(int minutesLeftInChapter READ minutesLeftInChapter NOTIFY positionChanged)
@@ -174,6 +177,7 @@ public:
     static QStringList transitions() { return {"slide", "flip", "cover", "fade", "none"}; }
     QString chapterLabel() const;
     int pageCount() const;
+    QVariantList bookmarks() const;
     bool canGoBack() const { return !m_back.isEmpty(); }
     bool canGoForward() const { return !m_forward.isEmpty(); }
     int minutesLeftInChapter() const;
@@ -211,6 +215,11 @@ public:
     // The places left by jumps (the contents, a link, Go to, a search), to
     // go back to with Backspace and on to again, as a browser does.
     Q_INVOKABLE void markPlace();
+    // Bookmarks the page on view, from position from to position to of the
+    // section, or removes the ones on it. Returns whether it is now marked.
+    Q_INVOKABLE bool toggleBookmark(double from, double to, const QString &text);
+    Q_INVOKABLE void goToBookmark(int index);
+    Q_INVOKABLE void removeBookmark(int index);
     Q_INVOKABLE bool goBack();
     Q_INVOKABLE bool goForward();
     // The footnote or endnote a link inside the book points at, as HTML to
@@ -271,6 +280,7 @@ signals:
     void textAboutToChange();
     void pagesChanged();
     void historyChanged();
+    void bookmarksChanged();
     void targetChanged();
     void searchChanged();
     void hitChanged();
@@ -287,6 +297,12 @@ private:
         // How much of the book's text has been read, as the open book counts
         // it; -1 for an entry saved before it was kept.
         double progress = -1;
+        struct Bookmark {
+            int section = 0;
+            double position = 0;
+            QString text;
+        };
+        QList<Bookmark> bookmarks;
     };
     struct Loaded {
         std::shared_ptr<Book> book;
@@ -325,6 +341,7 @@ private:
         double position = 0;
     };
     QList<Place> m_back, m_forward;
+    Entry *openEntry();
     Layout::Page m_page;
     QList<QList<double>> m_pages;
     QList<int> m_pagesBefore;

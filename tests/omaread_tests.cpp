@@ -797,6 +797,46 @@ private slots:
         QCOMPARE(backend.chapterLabel(), QString("Part Two"));
     }
 
+    void backendKeepsBookmarks() {
+        QTemporaryDir state, files;
+        FakePicker picker;
+        const QString path = writeText(files.filePath("marks.md"), "# Book\nOne.\n## Two\nTwo.\n## Three\nThree.\n");
+        {
+            Backend backend(state.path(), &picker);
+            backend.openFile(path);
+            QTRY_VERIFY(backend.isOpen());
+            backend.goTo(1);
+            QVERIFY(backend.toggleBookmark(0, 1, "Two.  "));
+            backend.goTo(0);
+            QVERIFY(backend.toggleBookmark(0.2, 0.5, "One."));
+            // In reading order, with the first words there and the chapter.
+            QCOMPARE(backend.bookmarks().size(), 2);
+            QCOMPARE(backend.bookmarks()[0].toMap().value("text").toString(), QString("One."));
+            QCOMPARE(backend.bookmarks()[1].toMap().value("chapter").toString(), QString("Two"));
+            // B on a marked page takes the mark away.
+            QVERIFY(!backend.toggleBookmark(0.1, 0.4, ""));
+            QCOMPARE(backend.bookmarks().size(), 1);
+            // Going to one leaves a place to come back to.
+            backend.goToBookmark(0);
+            QCOMPARE(backend.section(), 1);
+            QVERIFY(backend.goBack());
+            QCOMPARE(backend.section(), 0);
+            // Another book and back: they're still there.
+            backend.close();
+            QVERIFY(backend.bookmarks().isEmpty());
+            backend.openFile(path);
+            QTRY_VERIFY(backend.isOpen());
+            QCOMPARE(backend.bookmarks().size(), 1);
+            backend.save();
+        }
+        Backend again(state.path(), &picker);
+        again.openFile(path);
+        QTRY_VERIFY(again.isOpen());
+        QCOMPARE(again.bookmarks().size(), 1);
+        again.removeBookmark(0);
+        QVERIFY(again.bookmarks().isEmpty());
+    }
+
     void backendRemembersHowTextIsSet() {
         QTemporaryDir state;
         FakePicker picker;
@@ -1291,6 +1331,22 @@ private slots:
         QCOMPARE(backend.section(), 0);
         QVERIFY(backend.goBack());
         QCOMPARE(backend.section(), 1);
+        // B marks the page, its corner shows it, and the contents' second tab
+        // lists it: Enter goes there.
+        QTest::keyClick(window, Qt::Key_B);
+        QCOMPARE(backend.bookmarks().size(), 1);
+        QTRY_VERIFY(window->property("bookmarkHere").toBool());
+        QTest::keyClick(window, Qt::Key_Home);
+        QVERIFY(!window->property("bookmarkHere").toBool());
+        QTest::keyClick(window, Qt::Key_T);
+        QObject *contents = window->findChild<QObject *>("contents");
+        QTRY_VERIFY(contents->property("opened").toBool());
+        QTest::keyClick(window, Qt::Key_Tab);
+        QVERIFY(contents->property("marks").toBool());
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(!contents->property("visible").toBool());
+        QCOMPARE(backend.section(), 1);
+        QTRY_VERIFY(window->property("bookmarkHere").toBool());
     }
 
     void windowCountsPagesAsSpaceTurnsThem() {

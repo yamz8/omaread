@@ -91,7 +91,13 @@ void Backend::readState() {
         Entry entry{book.value("path").toString(), book.value("title").toString(), book.value("author").toString(),
                     book.value("kind").toString(), book.value("section").toInt(), book.value("sections").toInt(),
                     std::clamp(book.value("position").toDouble(), 0.0, 1.0), qint64(book.value("opened").toDouble()),
-                    book.value("progress").toDouble(-1)};
+                    book.value("progress").toDouble(-1), {}};
+        for (const QJsonValue &mark : book.value("bookmarks").toArray()) {
+            const QJsonObject m = mark.toObject();
+            entry.bookmarks << Entry::Bookmark{m.value("section").toInt(),
+                                               std::clamp(m.value("position").toDouble(), 0.0, 1.0),
+                                               m.value("text").toString()};
+        }
         if (!entry.path.isEmpty())
             m_library << entry;
     }
@@ -105,7 +111,14 @@ void Backend::save() {
                                  {"author", entry.author},     {"kind", entry.kind},
                                  {"section", entry.section},   {"sections", entry.sections},
                                  {"position", entry.position}, {"opened", double(entry.opened)},
-                                 {"progress", entry.progress}});
+                                 {"progress", entry.progress}, {"bookmarks", [&] {
+                                      QJsonArray marks;
+                                      for (const Entry::Bookmark &mark : entry.bookmarks)
+                                          marks.append(QJsonObject{{"section", mark.section},
+                                                                   {"position", mark.position},
+                                                                   {"text", mark.text}});
+                                      return marks;
+                                  }()}});
     const QJsonObject state{
         {"textScale", m_textScale}, {"tintPages", m_tintPages}, {"spread", m_spread}, {"transition", m_transition},
         {"typeface", m_typeface},   {"lineSpacing", m_lineSpacing}, {"columnWidth", m_columnWidth},
@@ -509,15 +522,18 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
     m_open->set(m_book);
     m_section = 0;
     m_position = 0;
+    QList<Entry::Bookmark> bookmarks;
     const auto it = std::find_if(m_library.begin(), m_library.end(),
                                  [&](const Entry &entry) { return entry.path == m_book->path; });
     if (it != m_library.end()) {
         m_section = std::clamp(it->section, 0, m_book->sectionCount() - 1);
         m_position = it->position;
+        bookmarks = it->bookmarks;
         m_library.erase(it);
     }
     m_library.prepend(Entry{m_book->path, m_book->title, m_book->author, m_book->kindName(), m_section,
-                            m_book->sectionCount(), m_position, QDateTime::currentMSecsSinceEpoch(), progress()});
+                            m_book->sectionCount(), m_position, QDateTime::currentMSecsSinceEpoch(), progress(),
+                            bookmarks});
     while (m_library.size() > maxLibrary)
         m_library.removeLast();
     scheduleSave();
@@ -527,6 +543,7 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
     m_back.clear();
     m_forward.clear();
     emit historyChanged();
+    emit bookmarksChanged();
     emit bookChanged();
     updateText();
     emit sectionChanged();
@@ -566,6 +583,7 @@ void Backend::close() {
     m_back.clear();
     m_forward.clear();
     emit historyChanged();
+    emit bookmarksChanged();
     emit bookChanged();
     updateText();
     emit sectionChanged();
@@ -614,6 +632,61 @@ QString Backend::note(const QString &link) const {
         return {};
     const QString html = m_book->notes.value(QString("%1#%2").arg(section).arg(fragment));
     return html.isEmpty() ? QString() : Styling::sized(Book::withInk(html, m_ink), m_readingSize);
+}
+
+// The open book's entry in the library, which keeps its bookmarks.
+Backend::Entry *Backend::openEntry() {
+    return m_book && !m_library.isEmpty() && m_library.first().path == m_book->path ? &m_library.first() : nullptr;
+}
+
+QVariantList Backend::bookmarks() const {
+    QVariantList list;
+    if (!m_book || m_library.isEmpty() || m_library.first().path != m_book->path)
+        return list;
+    for (const Entry::Bookmark &mark : m_library.first().bookmarks)
+        list << QVariantMap{{"section", mark.section}, {"position", mark.position},
+                            {"text", mark.text},       {"chapter", chapterLabelFor(mark.section)}};
+    return list;
+}
+
+bool Backend::toggleBookmark(double from, double to, const QString &text) {
+    Entry *entry = openEntry();
+    if (!entry)
+        return false;
+    auto &marks = entry->bookmarks;
+    const auto here = [&](const Entry::Bookmark &mark) {
+        return mark.section == m_section && mark.position >= from - 0.0001 && mark.position < to;
+    };
+    const bool marked = std::any_of(marks.begin(), marks.end(), here);
+    if (marked) {
+        marks.removeIf(here);
+    } else {
+        marks << Entry::Bookmark{m_section, std::clamp(from, 0.0, 1.0), text.simplified().left(200)};
+        std::sort(marks.begin(), marks.end(), [](const Entry::Bookmark &a, const Entry::Bookmark &b) {
+            return std::tie(a.section, a.position) < std::tie(b.section, b.position);
+        });
+    }
+    emit bookmarksChanged();
+    scheduleSave();
+    return !marked;
+}
+
+void Backend::goToBookmark(int index) {
+    const Entry *entry = openEntry();
+    if (!entry || index < 0 || index >= entry->bookmarks.size())
+        return;
+    const Entry::Bookmark mark = entry->bookmarks[index];
+    markPlace();
+    goTo(mark.section, mark.position);
+}
+
+void Backend::removeBookmark(int index) {
+    Entry *entry = openEntry();
+    if (!entry || index < 0 || index >= entry->bookmarks.size())
+        return;
+    entry->bookmarks.removeAt(index);
+    emit bookmarksChanged();
+    scheduleSave();
 }
 
 void Backend::markPlace() {

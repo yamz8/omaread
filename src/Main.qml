@@ -31,7 +31,7 @@ ApplicationWindow {
     readonly property int columnChars: backend.columnWidth === "narrow" ? 28 : backend.columnWidth === "wide" ? 42 : 34
 
     // Single-key shortcuts rest while a popup or the search field has the keyboard.
-    readonly property bool busy: help.opened || contents.opened || goDialog.opened || passwordDialog.opened
+    readonly property bool busy: help.opened || contents.visible || goDialog.opened || passwordDialog.opened
                                  // From the moment it appears, not once its opening animation ends,
                                  // or a key pressed right after S turns the page behind it.
                                  || settings.visible || note.visible
@@ -332,6 +332,32 @@ ApplicationWindow {
             }
         }
     }
+    // The page on view, as positions in its section, for a bookmark: a
+    // bookmark is on the page when it lies between them.
+    function bookmarkRange() {
+        if (backend.paged)
+            return { from: 0, to: 1.0001 }
+        const max = view.contentHeight - view.height
+        if (max <= 0)
+            return { from: 0, to: 1.0001 }
+        return { from: view.contentY / max, to: Math.min(1.0001, (view.contentY + view.height * 0.9) / max) }
+    }
+    readonly property bool bookmarkHere: {
+        void view.contentY
+        const range = bookmarkRange()
+        return backend.bookmarks.some(b => b.section === backend.section && b.position >= range.from - 0.0001
+                                           && b.position < range.to)
+    }
+    function toggleBookmark() {
+        const range = bookmarkRange()
+        let text = qsTr("Page %1").arg(number(backend.section + 1))
+        if (!backend.paged) {
+            const start = prose.positionAt(0, view.contentY - prose.y + lineCover.top + 2)
+            text = prose.getText(start, Math.min(prose.length, start + 200))
+        }
+        say(backend.toggleBookmark(range.from, range.to, text) ? qsTr("Bookmarked") : qsTr("Bookmark removed"))
+    }
+
     // The keyboard's way to a link: Tab and Shift+Tab step through the links
     // on screen, Enter opens the one chosen, and Escape lets it go.
     property var chosenLink: null
@@ -431,12 +457,13 @@ ApplicationWindow {
     Shortcut { sequence: "["; enabled: win.reading; onActivated: win.jump(Math.max(0, backend.section - win.step), 0) }
     Shortcut { sequence: "Home"; enabled: win.reading; onActivated: { win.markJump(); win.jump(0, 0) } }
     Shortcut { sequence: "End"; enabled: win.reading; onActivated: { win.markJump(); win.jump(backend.sectionCount - 1, 0) } }
+    Shortcut { sequence: "B"; enabled: win.reading; onActivated: win.toggleBookmark() }
     Shortcut { sequence: "Tab"; enabled: win.reading && !backend.paged; onActivated: win.chooseLink(1) }
     Shortcut { sequence: "Backtab"; enabled: win.reading && !backend.paged; onActivated: win.chooseLink(-1) }
     Shortcut { sequences: ["Return", "Enter"]; enabled: win.reading && win.chosenLink !== null; onActivated: win.openChosenLink() }
     Shortcut { sequences: ["Backspace", "Alt+Left"]; enabled: win.reading && backend.canGoBack; onActivated: win.goBack() }
     Shortcut { sequences: ["Shift+Backspace", "Alt+Right"]; enabled: win.reading && backend.canGoForward; onActivated: win.goForward() }
-    Shortcut { sequence: "T"; enabled: backend.open && (!win.busy || contents.opened); onActivated: contents.opened ? contents.close() : contents.open() }
+    Shortcut { sequence: "T"; enabled: backend.open && (!win.busy || contents.visible); onActivated: contents.visible ? contents.close() : contents.open() }
     Shortcut { sequence: "G"; enabled: win.reading; onActivated: goDialog.open() }
     Shortcut { sequences: ["/", StandardKey.Find]; enabled: backend.open && settled && !help.opened && !contents.opened && !goDialog.opened; onActivated: win.startFinding() }
     Shortcut { sequences: ["N", StandardKey.FindNext]; enabled: win.reading && backend.hitCount > 0; onActivated: backend.nextHit() }
@@ -807,6 +834,34 @@ ApplicationWindow {
                             height: lineCover.bottom
                             visible: height > 0
                             color: theme.background
+                        }
+
+                        // A ribbon on a bookmarked page, as on a book's corner.
+                        Canvas {
+                            objectName: "bookmarkRibbon"
+                            anchors.top: parent.top
+                            anchors.right: parent.right
+                            anchors.rightMargin: 28
+                            width: 14
+                            height: 26
+                            visible: win.bookmarkHere
+                            onPaint: {
+                                const g = getContext("2d")
+                                g.reset()
+                                g.fillStyle = theme.accent
+                                g.beginPath()
+                                g.moveTo(0, 0)
+                                g.lineTo(width, 0)
+                                g.lineTo(width, height)
+                                g.lineTo(width / 2, height - 6)
+                                g.lineTo(0, height)
+                                g.closePath()
+                                g.fill()
+                            }
+                            Connections {
+                                target: theme
+                                function onChanged() { parent.requestPaint() }
+                            }
                         }
 
                         // Shadow on a page swinging in.
@@ -1365,12 +1420,14 @@ ApplicationWindow {
         }
     }
 
-    // The table of contents: Up and Down to choose, Enter to go there.
+    // The table of contents and the bookmarks, a tab each: Up and Down to
+    // choose, Enter to go there, Tab to switch, Delete to remove a bookmark.
     Popup {
         id: contents
         objectName: "contents"
+        property bool marks: false
         anchors.centerIn: Overlay.overlay
-        width: Math.min(560, win.width - 64)
+        width: Math.min(600, win.width - 64)
         height: Math.min(contentsColumn.implicitHeight + topPadding + bottomPadding, win.height - 96)
         modal: true
         focus: true
@@ -1380,17 +1437,51 @@ ApplicationWindow {
             border.color: theme.colors.selection
             radius: theme.radius
         }
-        onOpened: {
-            chapters.currentIndex = Math.max(0, backend.tocIndex)
-            chapters.positionViewAtIndex(chapters.currentIndex, ListView.Center)
-            chapters.forceActiveFocus()
+        // The list takes the keys as the panel starts to appear, not once its
+        // opening animation ends, or a key pressed right after T is lost.
+        onAboutToShow: {
+            marks = false
+            focusList()
         }
+        onMarksChanged: if (visible) focusList()
 
+        function focusList() {
+            if (marks) {
+                markList.currentIndex = 0
+                markList.forceActiveFocus()
+            } else {
+                chapters.currentIndex = Math.max(0, backend.tocIndex)
+                chapters.positionViewAtIndex(chapters.currentIndex, ListView.Center)
+                chapters.forceActiveFocus()
+            }
+        }
         function choose(index) {
             backend.goToEntry(index)
             win.hintBack()
             Qt.callLater(win.restore)
             close()
+        }
+        function chooseMark(index) {
+            backend.goToBookmark(index)
+            win.hintBack()
+            Qt.callLater(win.restore)
+            close()
+        }
+        // The first page of a section, as the footer counts them, or "" while
+        // they're being counted.
+        function pageOf(section) {
+            if (backend.paged)
+                return win.number(section + 1)
+            return backend.pageCount > 0 ? win.number(backend.pageAt(section, 0)) : ""
+        }
+        // Whether a bookmark lies in the chapter that starts at entry index.
+        function marked(index) {
+            // A row can outlive its book's contents for a moment as another opens.
+            if (index < 0 || index >= backend.toc.length)
+                return false
+            const from = backend.toc[index].section
+            const to = index + 1 < backend.toc.length ? backend.toc[index + 1].section : backend.sectionCount
+            return backend.bookmarks.some(b => b.section >= from && (b.section < to || (to === from && b.section === from)))
         }
 
         ColumnLayout {
@@ -1401,16 +1492,48 @@ ApplicationWindow {
             LayoutMirroring.enabled: win.rightToLeft
             LayoutMirroring.childrenInherit: true
 
-            Label {
+            RowLayout {
                 Layout.fillWidth: true
-                text: qsTr("Contents")
-                font.pixelSize: Math.round(win.uiSize * 10 / 7)
-                font.bold: true
+                spacing: 20
+                Repeater {
+                    model: [qsTr("Contents"), backend.bookmarks.length > 0
+                            ? qsTr("Bookmarks (%1)").arg(win.number(backend.bookmarks.length)) : qsTr("Bookmarks")]
+                    delegate: Label {
+                        required property int index
+                        required property string modelData
+                        text: modelData
+                        font.pixelSize: Math.round(win.uiSize * 10 / 7)
+                        font.bold: true
+                        color: (index === 1) === contents.marks ? theme.foreground : win.muted
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: contents.marks = parent.index === 1
+                        }
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                // How far through the book, and how long is left.
+                Label {
+                    objectName: "contentsProgress"
+                    horizontalAlignment: Text.AlignRight
+                    color: win.muted
+                    text: backend.minutesLeftInBook > 0
+                          ? qsTr("%1 read").arg(win.percent(backend.progress)) + "  ·  " + win.timeLeft(backend.minutesLeftInBook, true)
+                          : qsTr("%1 read").arg(win.percent(backend.progress))
+                }
             }
             Label {
                 Layout.fillWidth: true
-                visible: chapters.count === 0
+                visible: !contents.marks && chapters.count === 0
                 text: qsTr("This book has no table of contents. Use [ and ] to move between sections.")
+                color: win.muted
+                wrapMode: Text.Wrap
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: contents.marks && markList.count === 0
+                text: qsTr("No bookmarks yet. B marks the page you're on.")
                 color: win.muted
                 wrapMode: Text.Wrap
             }
@@ -1420,13 +1543,14 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredHeight: contentHeight
-                visible: count > 0
+                visible: !contents.marks && count > 0
                 clip: true
                 model: backend.toc
                 highlightMoveDuration: 0
                 ScrollBar.vertical: ScrollBar {}
                 Keys.onReturnPressed: contents.choose(currentIndex)
                 Keys.onEnterPressed: contents.choose(currentIndex)
+                Keys.onTabPressed: contents.marks = true
 
                 delegate: Rectangle {
                     id: chapter
@@ -1437,22 +1561,98 @@ ApplicationWindow {
                     radius: Math.min(4, theme.radius)
                     color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
 
-                    Label {
+                    RowLayout {
                         anchors.fill: parent
                         anchors.leftMargin: 12 + 18 * Math.min(chapter.modelData.depth, 4)
                         anchors.rightMargin: 12
-                        verticalAlignment: Text.AlignVCenter
-                        horizontalAlignment: Text.AlignLeft
-                        text: chapter.modelData.title
-                        font.bold: chapter.index === backend.tocIndex
-                        color: chapter.index === backend.tocIndex ? theme.accent : theme.foreground
-                        elide: Text.ElideRight
+                        spacing: 10
+                        Label {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignLeft
+                            text: chapter.modelData.title
+                            font.bold: chapter.index === backend.tocIndex
+                            color: chapter.index === backend.tocIndex ? theme.accent : theme.foreground
+                            elide: Text.ElideRight
+                        }
+                        // A bookmark somewhere in this chapter.
+                        Rectangle {
+                            visible: contents.marked(chapter.index)
+                            implicitWidth: 6
+                            implicitHeight: 6
+                            radius: 3
+                            color: theme.accent
+                        }
+                        Label {
+                            text: contents.pageOf(chapter.modelData.section)
+                            color: win.muted
+                            font.features: { "tnum": 1 }
+                        }
                     }
                     MouseArea {
                         anchors.fill: parent
                         onClicked: contents.choose(chapter.index)
                     }
                 }
+            }
+            ListView {
+                id: markList
+                objectName: "bookmarks"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredHeight: contentHeight
+                visible: contents.marks && count > 0
+                clip: true
+                model: backend.bookmarks
+                highlightMoveDuration: 0
+                ScrollBar.vertical: ScrollBar {}
+                Keys.onReturnPressed: if (currentIndex >= 0) contents.chooseMark(currentIndex)
+                Keys.onEnterPressed: if (currentIndex >= 0) contents.chooseMark(currentIndex)
+                Keys.onDeletePressed: if (currentIndex >= 0) backend.removeBookmark(currentIndex)
+                Keys.onTabPressed: contents.marks = false
+
+                delegate: Rectangle {
+                    id: mark
+                    required property int index
+                    required property var modelData
+                    width: ListView.view.width
+                    height: Math.round(win.uiSize * 3.8)
+                    radius: Math.min(4, theme.radius)
+                    color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 12
+                        spacing: 0
+                        Label {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignLeft
+                            text: backend.paged ? qsTr("Page %1").arg(win.number(mark.modelData.section + 1))
+                                                : mark.modelData.chapter
+                            color: win.muted
+                            font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignLeft
+                            text: mark.modelData.text
+                            elide: Text.ElideRight
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: contents.chooseMark(mark.index)
+                    }
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignHCenter
+                color: win.muted
+                font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                text: contents.marks ? qsTr("Enter to go there  ·  Delete to remove  ·  Tab for the contents")
+                                     : qsTr("Enter to go there  ·  Tab for bookmarks")
             }
         }
     }
@@ -1579,7 +1779,7 @@ ApplicationWindow {
                     { keys: "]  [", action: qsTr("Next or previous section") },
                     { keys: "Home  End", action: qsTr("First or last section") },
                     { keys: "G", action: qsTr("Go to a page or section") },
-                    { keys: "T", action: qsTr("Table of contents") },
+                    { keys: "T", action: qsTr("Contents and bookmarks") },
                     { keys: "/  Ctrl+F", action: qsTr("Find in the book") },
                     { keys: "N  Shift+N", action: qsTr("Next or previous match") },
                     { keys: "Ctrl+C", action: qsTr("Copy the selected words") },
@@ -1587,6 +1787,7 @@ ApplicationWindow {
                     { keys: "W", action: qsTr("Fit pages to the width or the window") },
                     { keys: "D", action: qsTr("One page or two side by side") },
                     { keys: "I", action: qsTr("Color pages like the theme") },
+                    { keys: "B", action: qsTr("Bookmark the page, or remove its bookmark") },
                     { keys: "Tab  Enter", action: qsTr("Choose a link or note on the page, and open it") },
                     { keys: "Backspace  Shift+Backspace", action: qsTr("Back or forward after a jump") },
                     { keys: "P", action: qsTr("Show time left, the page, or the percent read") },
