@@ -2,7 +2,9 @@
 
 ![Omaread searching an EPUB](docs/screenshot.png)
 
-A book and document reader for [Omarchy](https://omarchy.org). It opens PDFs, EPUBs, comic archives (CBZ, CBR, CB7, CBT), Markdown and plain text, and it's driven from the keyboard. It follows the Omarchy theme and language as they change. Books flow in the theme's colors, and PDF and comic pages can be tinted to match it.
+A book reader for [Omarchy](https://omarchy.org). EPUBs, comics and PDF books, read from the keyboard in your theme's colors, and opened again where you stopped.
+
+Omaread is for reading books from start to finish. EPUBs flow in the theme's colors at the desktop's text size, comics (CBZ, CBR, CB7, CBT) turn a page at a time or two side by side, and PDF and comic pages can be tinted to match the theme. It follows the Omarchy theme and language as they change. Markdown and plain text open too. Filling in forms, annotating and printing PDFs are left to a document viewer.
 
 The library remembers every book you've opened and where you stopped reading, so the next time a book opens, it opens at that place. The library lives in `~/.local/state/omaread/library.json`. Omaread never changes the files it reads.
 

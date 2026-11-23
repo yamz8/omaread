@@ -13,6 +13,7 @@
 #include <QSaveFile>
 #include <QTextBlock>
 #include <QTextCursor>
+#include <QTextList>
 #include <QTextDocument>
 #include <QtConcurrent>
 
@@ -24,6 +25,10 @@ namespace {
 
 // Enough to find any recent book again without the list becoming an archive.
 constexpr int maxLibrary = 60;
+// Where spaceLines() records the gap it gave the chapter, and which paragraphs
+// it gave one, so a new text size changes only those.
+constexpr int paragraphGapProperty = QTextFormat::UserProperty + 1;
+constexpr int paragraphGapSetProperty = QTextFormat::UserProperty + 2;
 
 QString defaultStateDirectory() {
     QString state = qEnvironmentVariable("XDG_STATE_HOME");
@@ -574,18 +579,38 @@ void Backend::copyText(const QString &text) {
         clipboard->setText(text);
 }
 
-void Backend::spaceLines(QQuickTextDocument *document, double factor) {
+void Backend::spaceLines(QQuickTextDocument *document, double factor, double paragraphGap) {
     QTextDocument *text = document ? document->textDocument() : nullptr;
     if (!text || text->isEmpty())
         return;
     const qreal height = factor * 100;
     // Already spaced: changing it again would only lay the chapter out twice.
-    if (qFuzzyCompare(text->firstBlock().blockFormat().lineHeight(), height)
-        && text->firstBlock().blockFormat().lineHeightType() == QTextBlockFormat::ProportionalHeight)
+    const QTextBlockFormat first = text->firstBlock().blockFormat();
+    if (qFuzzyCompare(first.lineHeight(), height) && first.lineHeightType() == QTextBlockFormat::ProportionalHeight
+        && qFuzzyCompare(first.doubleProperty(paragraphGapProperty) + 1, paragraphGap + 1))
         return;
     QTextBlockFormat format;
     format.setLineHeight(height, QTextBlockFormat::ProportionalHeight);
+    format.setProperty(paragraphGapProperty, paragraphGap);
     QTextCursor cursor(text);
+    cursor.beginEditBlock();
     cursor.select(QTextCursor::Document);
     cursor.mergeBlockFormat(format);
+    // Markdown's paragraphs arrive with no space between them, where HTML's
+    // carry their own margins. Give the bare ones a gap, scaled to the text
+    // size, but leave headings, lists and code as the document laid them out.
+    // Plain text is left alone: a hard-wrapped file has a block for every line.
+    const bool markdown = m_book && m_book->kind == Book::Kind::Markdown;
+    for (QTextBlock block = markdown ? text->begin() : text->end(); block.isValid(); block = block.next()) {
+        QTextBlockFormat own = block.blockFormat();
+        const bool bare = own.headingLevel() == 0 && !block.textList() && !own.hasProperty(QTextFormat::BlockCodeFence)
+                          && !own.nonBreakableLines() && own.topMargin() == 0
+                          && (own.bottomMargin() == 0 || own.boolProperty(paragraphGapSetProperty));
+        if (!bare)
+            continue;
+        own.setBottomMargin(paragraphGap);
+        own.setProperty(paragraphGapSetProperty, true);
+        QTextCursor(block).setBlockFormat(own);
+    }
+    cursor.endEditBlock();
 }

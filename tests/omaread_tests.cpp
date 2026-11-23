@@ -486,6 +486,23 @@ private slots:
         QCOMPARE(book->toc[2].depth, 1);
     }
 
+    void markdownTitleStaysWithFirstChapter() {
+        QTemporaryDir dir;
+        const QString path = writeText(dir.filePath("book.md"),
+                                       "# The Lighthouse\n\n## One\nDusk.\n\n## Two\nMorning.\n");
+        Book::Error error;
+        const auto book = Book::load(path, 1, &error);
+        QVERIFY(book);
+        QCOMPARE(book->title, QString("The Lighthouse"));
+        QCOMPARE(book->sectionCount(), 2);
+        QVERIFY(book->sections[0].startsWith("# The Lighthouse"));
+        QVERIFY(book->sections[0].contains("Dusk."));
+        QCOMPARE(book->toc.size(), 3);
+        QCOMPARE(book->toc[0].section, 0);
+        QCOMPARE(book->toc[1].section, 0);
+        QCOMPARE(book->toc[2].section, 1);
+    }
+
     void textBreaksBetweenParagraphs() {
         QTemporaryDir dir;
         QStringList paragraphs;

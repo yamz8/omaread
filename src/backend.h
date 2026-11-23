@@ -156,7 +156,7 @@ public:
     Q_INVOKABLE void copyText(const QString &text);
     // Opens up a chapter's lines for reading, as a factor of their height.
     // TextEdit has no line height of its own, so it is set on every block.
-    Q_INVOKABLE void spaceLines(QQuickTextDocument *document, double factor);
+    Q_INVOKABLE void spaceLines(QQuickTextDocument *document, double factor, double paragraphGap = 0);
 
     // Writes the library now rather than after the pause that gathers changes.
     void save();

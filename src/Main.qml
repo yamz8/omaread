@@ -595,7 +595,9 @@ ApplicationWindow {
                                 color: theme.foreground
                                 selectionColor: theme.accent
                                 selectedTextColor: theme.accentForeground
-                                onTextChanged: backend.spaceLines(textDocument, 1.35)
+                                readonly property real paragraphGap: Math.round(win.readingSize * 0.75)
+                                onTextChanged: backend.spaceLines(textDocument, 1.35, paragraphGap)
+                                onParagraphGapChanged: backend.spaceLines(textDocument, 1.35, paragraphGap)
                                 onLinkActivated: link => { if (!backend.followLink(link)) Qt.openUrlExternally(link) }
 
                                 HoverHandler {
@@ -743,7 +745,9 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.preferredWidth: 2
                         horizontalAlignment: Text.AlignHCenter
-                        text: backend.tocIndex >= 0 ? backend.toc[backend.tocIndex].title : ""
+                        // Not the book's title a second time, as on a title page.
+                        text: backend.tocIndex >= 0 && backend.toc[backend.tocIndex].title !== backend.title
+                              ? backend.toc[backend.tocIndex].title : ""
                         color: win.muted
                         elide: Text.ElideRight
                     }

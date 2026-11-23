@@ -537,23 +537,29 @@ bool Book::loadMarkdown(Error *error) {
     static const QRegularExpression heading("^(#{1,2})[ \\t]+(.+?)[ \\t#]*$");
     static const QRegularExpression fence("^\\s*(```|~~~)");
     // A chapter starts at every first- and second-level heading outside code.
+    // Headings with nothing under them yet, such as a book's `# Title` right
+    // before its first `## Chapter`, stay with the chapter that follows rather
+    // than making a page of their own with only a heading on it.
     QString current;
-    bool inFence = false, titled = false;
+    bool inFence = false, titled = false, hasBody = false;
     for (const QString &line : text.split('\n')) {
         if (fence.match(line).hasMatch())
             inFence = !inFence;
         const auto match = inFence ? QRegularExpressionMatch() : heading.match(line);
         if (match.hasMatch()) {
-            if (!current.trimmed().isEmpty()) {
+            if (hasBody) {
                 sections << current;
                 aspects << 0;
+                current.clear();
+                hasBody = false;
             }
-            current.clear();
             toc << TocEntry{match.captured(2).trimmed(), int(sections.size()), int(match.captured(1).size()) - 1, {}};
             if (!titled && match.captured(1) == "#") {
                 title = match.captured(2).trimmed();
                 titled = true;
             }
+        } else if (!line.trimmed().isEmpty()) {
+            hasBody = true;
         }
         current += line + '\n';
     }
