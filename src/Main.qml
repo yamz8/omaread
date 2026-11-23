@@ -75,14 +75,17 @@ ApplicationWindow {
     function percent(p) { return qsTr("%1%").arg(number(Math.round(p * 100))) }
     function aspect(page) { return backend.aspects[page] || 0.7071 }
 
-    // One screen on, overlapping a little so no line is lost; at the end of a
-    // section, the start of the next.
+    // One screen on; at the end of a section, the start of the next. A flowing
+    // book's next screen starts with the line the last one cut off, so every
+    // line is read once and whole.
     function forward() {
         if (view.contentY + view.height >= view.contentHeight - 2) {
             if (backend.section + step < backend.sectionCount)
                 jump(backend.section + step, 0)
         } else {
-            turn(1, () => view.contentY = Math.min(view.contentY + screenStep(), view.contentHeight - view.height))
+            const cut = backend.paged ? -1 : view.height - lineCover.bottom
+            const to = cut > lineCover.pad ? view.contentY + cut - lineCover.pad : view.contentY + screenStep()
+            turn(1, () => view.contentY = Math.min(to, view.contentHeight - view.height))
         }
     }
     function backward() {
@@ -90,7 +93,10 @@ ApplicationWindow {
             if (backend.section > 0)
                 jump(Math.max(0, backend.section - step), 1)
         } else {
-            turn(-1, () => view.contentY = Math.max(0, view.contentY - screenStep()))
+            // The screen that ends where this one's first whole line begins.
+            const first = backend.paged ? -1 : view.contentY + lineCover.top
+            const to = first > view.contentY ? first + lineCover.pad - view.height : view.contentY - screenStep()
+            turn(-1, () => view.contentY = Math.max(0, Math.min(to, view.contentY - 1)))
         }
     }
     function screenStep() { return Math.max(40, view.height - 3 * readingSize) }
@@ -513,6 +519,38 @@ ApplicationWindow {
                             color: theme.background
                         }
 
+                        // A flowing book shows whole lines only: a line the window's
+                        // top or bottom edge cuts through is hidden behind the
+                        // page's color, and the next page turn starts with it. A
+                        // picture taller than that is never hidden.
+                        QtObject {
+                            id: lineCover
+                            readonly property int pad: 24
+                            function cutAt(edge) {
+                                if (backend.paged || prose.length === 0)
+                                    return null
+                                const y = edge - prose.y
+                                if (y < 0 || y > prose.height)
+                                    return null
+                                const line = prose.positionToRectangle(prose.positionAt(0, y))
+                                return line.y < y && line.y + line.height > y ? line : null
+                            }
+                            // How much of the top and bottom of the view to cover.
+                            readonly property real top: {
+                                void (view.contentY + view.height + prose.height + prose.width)
+                                const line = cutAt(view.contentY)
+                                const cover = line ? prose.y + line.y + line.height - view.contentY : 0
+                                return cover < view.height * 0.3 ? cover : 0
+                            }
+                            readonly property real bottom: {
+                                void (view.contentY + view.height + prose.height + prose.width)
+                                const edge = view.contentY + view.height
+                                const line = cutAt(edge)
+                                const cover = line ? edge - prose.y - line.y : 0
+                                return cover < view.height * 0.3 ? cover : 0
+                            }
+                        }
+
                         Flickable {
                             id: view
                             objectName: "view"
@@ -604,6 +642,23 @@ ApplicationWindow {
                                     cursorShape: prose.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.IBeamCursor
                                 }
                             }
+                        }
+
+                        // The lines the view's edges cut through, hidden. The
+                        // scroll bar stays above them.
+                        Rectangle {
+                            objectName: "topCover"
+                            anchors { left: parent.left; right: parent.right; top: parent.top; rightMargin: 16 }
+                            height: lineCover.top
+                            visible: height > 0
+                            color: theme.background
+                        }
+                        Rectangle {
+                            objectName: "bottomCover"
+                            anchors { left: parent.left; right: parent.right; bottom: parent.bottom; rightMargin: 16 }
+                            height: lineCover.bottom
+                            visible: height > 0
+                            color: theme.background
                         }
 
                         // Shadow on a page swinging in.
