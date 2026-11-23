@@ -12,14 +12,14 @@ Item {
     // In the list, where only the cover's colors and a letter fit.
     property bool small: false
 
-    readonly property var palette: ["blue", "green", "magenta", "cyan", "red", "yellow"]
+    readonly property var hues: ["blue", "green", "magenta", "cyan", "red", "yellow"]
     // The same book gets the same color every time.
     readonly property color hue: {
         const title = book.title || ""
         let hash = 0
         for (let i = 0; i < title.length; ++i)
             hash = (hash * 31 + title.charCodeAt(i)) % 1000003
-        const name = palette[hash % palette.length]
+        const name = hues[hash % hues.length]
         return theme.colors[name] || theme.accent
     }
 

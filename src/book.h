@@ -37,6 +37,17 @@ struct SearchHit {
     int contextAt = 0;
 };
 
+// A passage the reader marked, by where it starts and ends in its section's
+// text, with the words themselves, a note on it, and its color's name.
+struct Highlight {
+    int section = 0;
+    int start = 0;
+    int end = 0;
+    QString text;
+    QString note;
+    QString color = "yellow";
+};
+
 // A link on a PDF page: the area, as fractions of the page, and where it goes,
 // another page or a web address.
 struct PageLink {
@@ -81,6 +92,13 @@ public:
     // the endnotes. Progress and time left count only what is read.
     QList<int> words;
     QList<bool> reading;
+    // Where a section sits, as the book names it: its part and chapter,
+    // "Part II · V", leaving out an entry that only repeats the book's title.
+    QString chapterLabel(int section) const;
+    // Highlights and their notes as Markdown, under the book's title and
+    // each chapter's name, to keep or share.
+    QString notesMarkdown(const QList<Highlight> &highlights) const;
+
     // The book's cover, no taller than height: an EPUB's cover image, or a
     // PDF's or comic's first page. Null for a book without one.
     QImage cover(int height) const;

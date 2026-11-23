@@ -3,8 +3,8 @@ name: omaread
 description: |
   Read books and documents with Omaread: PDFs, EPUBs, comic archives,
   Markdown and text. Use for ANY request to read, summarize, quote from or
-  search a PDF or EPUB, list a book's chapters, or find where something is
-  said in a document. Omaread only reads; it never changes a file.
+  search a PDF or EPUB, list a book's chapters, find where something is
+  said in a document, or gather the passages and notes the person highlighted. Omaread only reads; it never changes a file.
 ---
 
 # Omaread
@@ -23,7 +23,10 @@ none changes the file.
   cut at its first- and second-level headings; text at about 20,000
   characters. Leave out `--section` for the whole book.
 - `omaread search <file> <words> --json`: every section the words appear in,
-  ignoring case, and how often.
+  ignoring case, and how often. A match is a word that begins with the words.
+- `omaread highlights <file>`: the passages the person highlighted in the
+  book and the notes they wrote, as Markdown under each chapter's name; with
+  `--json`, each one's section, chapter, text, note and color.
 - `omaread open <file>`: opens the book in the window, for the person to read.
 
 A locked PDF needs `--password`. Ask the person for it; never guess or try

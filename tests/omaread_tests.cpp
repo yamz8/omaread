@@ -900,6 +900,83 @@ private slots:
         QVERIFY(!backend.library()[0].toMap().value("finished").toBool());
     }
 
+    void backendKeepsHighlightsAndNotes() {
+        QTemporaryDir state, files;
+        FakePicker picker;
+        const QString path = writeText(files.filePath("marked.md"),
+                                       "# Marked\n\n## One\nThe keeper climbed the stairs at dusk.\n\n## Two\nMorning came grey.\n");
+        {
+            Backend backend(state.path(), &picker);
+            backend.openFile(path);
+            QTRY_VERIFY(backend.isOpen());
+            const QString text = backend.text();
+            QVERIFY(backend.addHighlight(4, 10, "keeper", "yellow") >= 0);
+            QCOMPARE(backend.highlightAt(5), 0);
+            QCOMPARE(backend.highlightAt(20), -1);
+            backend.setHighlightNote(0, "  Who keeps the light.  ");
+            // A wider highlight over it takes its place, and keeps its note.
+            QVERIFY(backend.addHighlight(0, 18, "The keeper climbed", "green") >= 0);
+            QCOMPARE(backend.highlights().size(), 1);
+            QVariantMap mark = backend.highlights()[0].toMap();
+            QCOMPARE(mark.value("note").toString(), QString("Who keeps the light."));
+            QCOMPARE(mark.value("color").toString(), QString("green"));
+            QCOMPARE(mark.value("chapter").toString(), QString("One"));
+            backend.setHighlightColor(0, "purple");
+            QCOMPARE(backend.highlights()[0].toMap().value("color").toString(), QString("green"));
+            backend.goTo(1);
+            backend.addHighlight(0, 7, "Morning", "pink");
+            backend.save();
+        }
+        Backend again(state.path(), &picker);
+        again.openFile(path);
+        QTRY_VERIFY(again.isOpen());
+        QCOMPARE(again.highlights().size(), 2);
+        // As Markdown: the book, each chapter, the passage quoted, and the note.
+        again.copyNotes();
+        const QString markdown = QGuiApplication::clipboard()->text();
+        QVERIFY(markdown.startsWith("# Marked\n"));
+        QVERIFY(markdown.contains("## One\n\n> The keeper climbed\n\nWho keeps the light.\n"));
+        QVERIFY(markdown.contains("## Two\n\n> Morning\n"));
+        // Going to one leaves a place to come back to.
+        again.goToHighlight(0);
+        QCOMPARE(again.section(), 0);
+        QCOMPARE(again.target(), 0);
+        again.removeHighlight(1);
+        QCOMPARE(again.highlights().size(), 1);
+    }
+
+    void commandsPrintHighlights() {
+        QTemporaryDir state, files;
+        FakePicker picker;
+        const QString path = writeText(files.filePath("quoted.md"), "# Quoted\n\n## One\nThe keeper climbed the stairs.\n");
+        {
+            Backend backend(state.path() + "/omaread", &picker);
+            backend.openFile(path);
+            QTRY_VERIFY(backend.isOpen());
+            const int at = backend.addHighlight(0, 10, "The keeper", "blue");
+            backend.setHighlightNote(at, "A lighthouse keeper.");
+            backend.save();
+        }
+        // The command reads the library where the app keeps it.
+        const QByteArray before = qgetenv("XDG_STATE_HOME");
+        qputenv("XDG_STATE_HOME", state.path().toUtf8());
+        Run run = omaread({"highlights", path});
+        QCOMPARE(run.code, 0);
+        QVERIFY(QString::fromUtf8(run.out).contains("> The keeper\n\nA lighthouse keeper.\n"));
+        run = omaread({"highlights", path, "--json"});
+        const QJsonObject json = QJsonDocument::fromJson(run.out).object();
+        QCOMPARE(json.value("highlights").toArray().size(), 1);
+        QCOMPARE(json.value("highlights").toArray()[0].toObject().value("chapter").toString(), QString("One"));
+        QCOMPARE(json.value("highlights").toArray()[0].toObject().value("color").toString(), QString("blue"));
+        run = omaread({"highlights", writeText(files.filePath("plain.md"), "# Plain\nText.\n")});
+        QCOMPARE(run.code, 0);
+        QVERIFY(QString::fromUtf8(run.out).contains("No highlights"));
+        if (before.isNull())
+            qunsetenv("XDG_STATE_HOME");
+        else
+            qputenv("XDG_STATE_HOME", before);
+    }
+
     void backendRemembersHowTextIsSet() {
         QTemporaryDir state;
         FakePicker picker;
@@ -1405,7 +1482,7 @@ private slots:
         QObject *contents = window->findChild<QObject *>("contents");
         QTRY_VERIFY(contents->property("opened").toBool());
         QTest::keyClick(window, Qt::Key_Tab);
-        QVERIFY(contents->property("marks").toBool());
+        QCOMPARE(contents->property("tab").toInt(), 1);
         QTest::keyClick(window, Qt::Key_Return);
         QTRY_VERIFY(!contents->property("visible").toBool());
         QCOMPARE(backend.section(), 1);
@@ -1454,6 +1531,74 @@ private slots:
         }
         QCOMPARE(page, backend.pageCount() - 1);
         QCOMPARE(backend.pageAt(1, 0), backend.pageCount());
+    }
+
+    void windowHighlightsChosenWords() {
+        QTemporaryDir dir, files;
+        Translator translator(dir.path() + "/language");
+        Theme theme(dir.path());
+        FakePicker picker;
+        Backend backend(dir.path() + "/state", &picker);
+        QQmlApplicationEngine engine;
+        QStringList warnings;
+        connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &errors) {
+            for (const auto &error : errors)
+                warnings << error.toString();
+        });
+        engine.rootContext()->setContextProperty("translator", &translator);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.addImageProvider("omaread", backend.createPageProvider());
+        engine.load(QUrl("qrc:/Main.qml"));
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QTRY_VERIFY(window->property("settled").toBool());
+        backend.setTransition("none");
+        backend.openFile(writeText(files.filePath("lamp.md"),
+                                   "## One\nThe keeper climbed the stairs at dusk, as he had every evening.\n"));
+        QTRY_VERIFY(backend.isOpen());
+        auto *prose = item(window->contentItem(), "prose");
+        QVERIFY(prose);
+        // Words chosen, as the mouse chooses them, and H highlights them.
+        QMetaObject::invokeMethod(prose, "select", Q_ARG(int, 8), Q_ARG(int, 14));
+        QCOMPARE(prose->property("selectedText").toString(), QString("keeper"));
+        QTest::keyClick(window, Qt::Key_H);
+        QCOMPARE(backend.highlights().size(), 1);
+        QCOMPARE(backend.highlights()[0].toMap().value("text").toString(), QString("keeper"));
+        // It's painted in the text.
+        auto *document = prose->property("textDocument").value<QQuickTextDocument *>()->textDocument();
+        QTextCursor cursor(document);
+        cursor.setPosition(10);
+        QTRY_VERIFY(cursor.charFormat().hasProperty(QTextFormat::BackgroundBrush));
+        // A click on it offers its colors, a note and the rest.
+        QRectF at;
+        QMetaObject::invokeMethod(prose, "positionToRectangle", Q_RETURN_ARG(QRectF, at), Q_ARG(int, 10));
+        const QPoint click = prose->mapToScene(at.center()).toPoint();
+        QTest::mouseClick(window, Qt::LeftButton, {}, click);
+        QObject *bar = window->findChild<QObject *>("selectionBar");
+        QTRY_VERIFY(bar->property("visible").toBool());
+        QCOMPARE(bar->property("highlight").toInt(), 0);
+        if (!qEnvironmentVariableIsEmpty("OMAREAD_GRAB")) {
+            QTest::qWait(400);
+            window->grabWindow().save(qEnvironmentVariable("OMAREAD_GRAB"));
+        }
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!bar->property("visible").toBool());
+        // The notebook lists it, and Enter goes there.
+        backend.goTo(0, 1);
+        QTest::keyClick(window, Qt::Key_T);
+        QObject *contents = window->findChild<QObject *>("contents");
+        QTRY_VERIFY(contents->property("visible").toBool());
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QCOMPARE(contents->property("tab").toInt(), 2);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTRY_VERIFY(!contents->property("visible").toBool());
+        QCOMPARE(backend.target(), 8);
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 
     void windowShowsANoteInPlace() {

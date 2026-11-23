@@ -94,6 +94,9 @@ class Backend : public QObject {
     // The open book's bookmarks, in reading order, each {section, position,
     // text, chapter}: the place, the first words there, and its chapter.
     Q_PROPERTY(QVariantList bookmarks READ bookmarks NOTIFY bookmarksChanged)
+    // The open book's highlights, in reading order, each {section, start, end,
+    // text, note, color, chapter}.
+    Q_PROPERTY(QVariantList highlights READ highlights NOTIFY highlightsChanged)
     Q_PROPERTY(bool canGoBack READ canGoBack NOTIFY historyChanged)
     Q_PROPERTY(bool canGoForward READ canGoForward NOTIFY historyChanged)
     Q_PROPERTY(int minutesLeftInChapter READ minutesLeftInChapter NOTIFY positionChanged)
@@ -186,6 +189,7 @@ public:
     QString chapterLabel() const;
     int pageCount() const;
     QVariantList bookmarks() const;
+    QVariantList highlights() const;
     bool canGoBack() const { return !m_back.isEmpty(); }
     bool canGoForward() const { return !m_forward.isEmpty(); }
     int minutesLeftInChapter() const;
@@ -242,6 +246,27 @@ public:
     // section, or removes the ones on it. Returns whether it is now marked.
     Q_INVOKABLE bool toggleBookmark(double from, double to, const QString &text);
     Q_INVOKABLE void goToBookmark(int index);
+    // Highlights in the section on view, by character positions in its text.
+    // A new one takes the place of any it overlaps, keeping their notes.
+    Q_INVOKABLE int addHighlight(int start, int end, const QString &text, const QString &color);
+    // The highlight in this section at a character position, or -1.
+    Q_INVOKABLE int highlightAt(int position) const;
+    Q_INVOKABLE void setHighlightColor(int index, const QString &color);
+    Q_INVOKABLE void setHighlightNote(int index, const QString &note);
+    Q_INVOKABLE void removeHighlight(int index);
+    Q_INVOKABLE void goToHighlight(int index);
+    // Draws this section's highlights in a chapter's text, colors by name.
+    Q_INVOKABLE void paintHighlights(QQuickTextDocument *document, const QVariantMap &colors) const;
+    // The open book's highlights and notes as Markdown, copied to the clipboard.
+    Q_INVOKABLE void copyNotes();
+    // Looks a word up in a dictionary installed here, sdcv's or dictd's; the
+    // answer comes in lookedUp, with an empty definition when there was none.
+    Q_INVOKABLE void lookUp(const QString &word);
+    // Whether a dictionary is installed at all.
+    Q_INVOKABLE bool canLookUp() const;
+    static QStringList highlightColors() { return {"yellow", "green", "blue", "pink"}; }
+    // Where the library is kept, for the commands, which read it as it is.
+    static QString stateFile();
     Q_INVOKABLE void removeBookmark(int index);
     Q_INVOKABLE bool goBack();
     Q_INVOKABLE bool goForward();
@@ -310,6 +335,8 @@ signals:
     void pagesChanged();
     void historyChanged();
     void bookmarksChanged();
+    void highlightsChanged();
+    void lookedUp(const QString &word, const QString &definition);
     // The book open was just read to its end.
     void bookFinished();
     void targetChanged();
@@ -334,6 +361,7 @@ private:
             QString text;
         };
         QList<Bookmark> bookmarks;
+        QList<Highlight> highlights;
         bool finished = false;
         // When a book found in a watched folder arrived there; 0 for one opened.
         qint64 added = 0;
@@ -377,6 +405,7 @@ private:
         double position = 0;
     };
     QList<Place> m_back, m_forward;
+    mutable bool m_painting = false;
     // Covers, as small images in a cache, and the book whose cover is being made.
     QString m_coverDirectory;
     QSet<QString> m_coverTried;

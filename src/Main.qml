@@ -34,7 +34,8 @@ ApplicationWindow {
     readonly property bool busy: help.opened || contents.visible || skim.visible || passwordDialog.opened
                                  // From the moment it appears, not once its opening animation ends,
                                  // or a key pressed right after S turns the page behind it.
-                                 || settings.visible || note.visible
+                                 || settings.visible || note.visible || selectionBar.visible || noteEditor.visible
+                                 || lookup.visible
                                  || findField.activeFocus || shelfSearch.activeFocus
     readonly property bool reading: backend.open && !busy && settled
     readonly property bool browsing: !backend.open && !busy && settled
@@ -414,6 +415,56 @@ ApplicationWindow {
         say(backend.toggleBookmark(range.from, range.to, text) ? qsTr("Bookmarked") : qsTr("Bookmark removed"))
     }
 
+    // Highlights, in the theme's own colors: full for marks beside them, and
+    // laid over the page's color for the words themselves, so text reads on them.
+    function highlightInk(name) {
+        const key = name === "pink" ? "magenta" : name
+        return theme.colors[key] || theme.accent
+    }
+    readonly property var highlightPaint: {
+        const paint = {}
+        for (const name of ["yellow", "green", "blue", "pink"]) {
+            const c = highlightInk(name)
+            paint[name] = Qt.tint(theme.background, Qt.rgba(c.r, c.g, c.b, theme.light ? 0.45 : 0.38))
+        }
+        return paint
+    }
+    property string lastHighlightColor: "yellow"
+    function paintHighlights() { backend.paintHighlights(prose.textDocument, highlightPaint) }
+    // A selection made with the mouse, or a highlight clicked: the bar offers
+    // what can be done with it.
+    function showSelectionBar(existing) {
+        selectionBar.highlight = existing
+        if (existing >= 0) {
+            const h = backend.highlights[existing]
+            selectionBar.start = h.start
+            selectionBar.end = h.end
+        } else {
+            selectionBar.start = prose.selectionStart
+            selectionBar.end = prose.selectionEnd
+        }
+        const r = prose.positionToRectangle(selectionBar.start)
+        const at = prose.mapToItem(Overlay.overlay, r.x, r.y)
+        selectionBar.anchorY = at.y
+        selectionBar.anchorX = prose.mapToItem(Overlay.overlay, prose.width / 2, 0).x
+        selectionBar.open()
+    }
+    function highlightSelection(color) {
+        lastHighlightColor = color
+        if (selectionBar.highlight >= 0) {
+            backend.setHighlightColor(selectionBar.highlight, color)
+        } else if (prose.selectionEnd > prose.selectionStart) {
+            selectionBar.highlight = backend.addHighlight(prose.selectionStart, prose.selectionEnd, prose.selectedText, color)
+            prose.deselect()
+        }
+        return selectionBar.highlight
+    }
+    function lookUpSelection() {
+        const word = selectionBar.highlight >= 0 ? backend.highlights[selectionBar.highlight].text : prose.selectedText
+        selectionBar.close()
+        lookup.ask(word.trim().split(/\s+/).slice(0, 4).join(" "))
+    }
+
     // The keyboard's way to a link: Tab and Shift+Tab step through the links
     // on screen, Enter opens the one chosen, and Escape lets it go.
     property var chosenLink: null
@@ -516,6 +567,15 @@ ApplicationWindow {
     Shortcut { sequence: "Home"; enabled: win.reading; onActivated: { win.markJump(); win.jump(0, 0) } }
     Shortcut { sequence: "End"; enabled: win.reading; onActivated: { win.markJump(); win.jump(backend.sectionCount - 1, 0) } }
     Shortcut { sequence: "B"; enabled: win.reading; onActivated: win.toggleBookmark() }
+    // Highlights the words chosen with the mouse, in the color used last.
+    Shortcut {
+        sequence: "H"
+        enabled: win.reading && !backend.paged && prose.selectedText.trim() !== ""
+        onActivated: {
+            win.highlightSelection(win.lastHighlightColor)
+            win.say(qsTr("Highlighted"))
+        }
+    }
     Shortcut { sequence: "Tab"; enabled: win.reading && !backend.paged; onActivated: win.chooseLink(1) }
     Shortcut { sequences: ["Backtab", "Shift+Backtab", "Shift+Tab"]; enabled: win.reading && !backend.paged; onActivated: win.chooseLink(-1) }
     Shortcut { sequences: ["Return", "Enter"]; enabled: win.reading && win.chosenLink !== null; onActivated: win.openChosenLink() }
@@ -1018,11 +1078,32 @@ ApplicationWindow {
                                 onTextChanged: {
                                     backend.loadImages(textDocument)
                                     typeset()
+                                    win.paintHighlights()
+                                }
+                                // The end of a selection made with the mouse, or a click on a highlight.
+                                PointHandler {
+                                    acceptedButtons: Qt.LeftButton
+                                    onActiveChanged: {
+                                        if (active)
+                                            return
+                                        if (prose.selectedText.trim() !== "" && !win.chosenLink && !win.finding) {
+                                            win.showSelectionBar(-1)
+                                        } else if (prose.selectedText === "" && prose.hoveredLink === "") {
+                                            const at = backend.highlightAt(prose.positionAt(point.position.x, point.position.y))
+                                            if (at >= 0)
+                                                win.showSelectionBar(at)
+                                        }
+                                    }
                                 }
                                 onParagraphGapChanged: typeset()
                                 Connections {
                                     target: backend
                                     function onSettingsChanged() { prose.typeset() }
+                                    function onHighlightsChanged() { win.paintHighlights() }
+                                }
+                                Connections {
+                                    target: theme
+                                    function onChanged() { win.paintHighlights() }
                                 }
                                 onLinkActivated: link => win.openLink(link)
 
@@ -1382,6 +1463,261 @@ ApplicationWindow {
         }
     }
 
+    // What can be done with words chosen with the mouse, or a highlight
+    // clicked: four colors, a note, copying, looking up, and taking a
+    // highlight away. It sits just above the words.
+    Popup {
+        id: selectionBar
+        objectName: "selectionBar"
+        property int highlight: -1
+        property int start: 0
+        property int end: 0
+        property real anchorX: 0
+        property real anchorY: 0
+        x: Math.round(Math.max(8, Math.min(win.width - width - 8, anchorX - width / 2)))
+        y: Math.round(anchorY - height - 10 < 8 ? anchorY + win.readingSize * 2 : anchorY - height - 10)
+        modal: false
+        dim: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: 8
+        background: Rectangle {
+            color: theme.background
+            border.color: theme.colors.selection
+            radius: theme.radius
+        }
+        onClosed: if (!noteEditor.visible) prose.deselect()
+
+        contentItem: RowLayout {
+            spacing: 6
+            LayoutMirroring.enabled: win.rightToLeft
+            LayoutMirroring.childrenInherit: true
+            Repeater {
+                model: ["yellow", "green", "blue", "pink"]
+                delegate: Rectangle {
+                    id: swatch
+                    required property string modelData
+                    readonly property bool chosen: selectionBar.highlight >= 0 && selectionBar.highlight < backend.highlights.length
+                                                   && backend.highlights[selectionBar.highlight].color === modelData
+                    implicitWidth: 26
+                    implicitHeight: 26
+                    radius: 13
+                    color: win.highlightPaint[modelData]
+                    border.width: chosen ? 3 : 1
+                    border.color: chosen ? win.highlightInk(modelData) : Qt.rgba(theme.foreground.r, theme.foreground.g, theme.foreground.b, 0.3)
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: { win.highlightSelection(swatch.modelData); selectionBar.close() }
+                    }
+                }
+            }
+            Rectangle { implicitWidth: 1; implicitHeight: 24; color: theme.colors.selection }
+            Button {
+                objectName: "noteButton"
+                text: qsTr("Note")
+                flat: true
+                Material.roundedScale: theme.radius
+                onClicked: {
+                    const index = selectionBar.highlight >= 0 ? selectionBar.highlight : win.highlightSelection(win.lastHighlightColor)
+                    selectionBar.close()
+                    noteEditor.edit(index)
+                }
+            }
+            Button {
+                text: qsTr("Copy")
+                flat: true
+                Material.roundedScale: theme.radius
+                onClicked: {
+                    backend.copyText(selectionBar.highlight >= 0 ? backend.highlights[selectionBar.highlight].text : prose.selectedText)
+                    win.say(qsTr("Copied"))
+                    selectionBar.close()
+                }
+            }
+            Button {
+                text: qsTr("Look up")
+                flat: true
+                Material.roundedScale: theme.radius
+                onClicked: win.lookUpSelection()
+            }
+            Button {
+                visible: selectionBar.highlight >= 0
+                text: qsTr("Remove")
+                flat: true
+                Material.roundedScale: theme.radius
+                onClicked: { backend.removeHighlight(selectionBar.highlight); selectionBar.close() }
+            }
+        }
+    }
+
+    // A note on a highlight: Ctrl+Enter keeps it, Escape leaves it as it was.
+    Popup {
+        id: noteEditor
+        objectName: "noteEditor"
+        property int index: -1
+        function edit(at) {
+            index = at
+            noteInput.text = at >= 0 && at < backend.highlights.length ? backend.highlights[at].note : ""
+            open()
+        }
+        function keep() {
+            backend.setHighlightNote(index, noteInput.text)
+            close()
+        }
+        anchors.centerIn: Overlay.overlay
+        width: Math.min(560, win.width - 64)
+        modal: true
+        focus: true
+        padding: 20
+        background: Rectangle {
+            color: theme.background
+            border.color: theme.colors.selection
+            radius: theme.radius
+        }
+        onAboutToShow: noteInput.forceActiveFocus()
+
+        contentItem: ColumnLayout {
+            spacing: 12
+            LayoutMirroring.enabled: win.rightToLeft
+            LayoutMirroring.childrenInherit: true
+            Label {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignLeft
+                text: noteEditor.index >= 0 && noteEditor.index < backend.highlights.length
+                      ? backend.highlights[noteEditor.index].text : ""
+                font.family: prose.font.family
+                font.italic: true
+                color: win.muted
+                wrapMode: Text.Wrap
+                maximumLineCount: 4
+                elide: Text.ElideRight
+            }
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.round(win.uiSize * 9)
+                TextArea {
+                    id: noteInput
+                    objectName: "noteInput"
+                    placeholderText: qsTr("Your note")
+                    wrapMode: TextEdit.Wrap
+                    Material.roundedScale: theme.radius
+                    Keys.onPressed: event => {
+                        if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
+                            noteEditor.keep()
+                            event.accepted = true
+                        }
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Ctrl+Enter to keep  ·  Esc to cancel")
+                    color: win.muted
+                    font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                }
+                Button { text: qsTr("Cancel"); flat: true; Material.roundedScale: theme.radius; onClicked: noteEditor.close() }
+                Button { text: qsTr("Keep"); flat: true; Material.roundedScale: theme.radius; onClicked: noteEditor.keep() }
+            }
+        }
+    }
+
+    // A word looked up in a dictionary installed here; with none, it says so
+    // and offers to look online, which happens only when chosen.
+    Popup {
+        id: lookup
+        objectName: "lookup"
+        property string word: ""
+        property string definition: ""
+        property bool waiting: false
+        function ask(text) {
+            word = text
+            definition = ""
+            waiting = backend.canLookUp()
+            open()
+            if (waiting)
+                backend.lookUp(text)
+        }
+        x: Math.round((win.width - width) / 2)
+        y: win.height - height - 8
+        width: Math.min(680, win.width - 32)
+        modal: false
+        dim: false
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        padding: 20
+        background: Rectangle {
+            color: theme.background
+            border.color: theme.colors.selection
+            radius: theme.radius
+        }
+        Connections {
+            target: backend
+            function onLookedUp(word, definition) {
+                if (word === lookup.word) {
+                    lookup.definition = definition
+                    lookup.waiting = false
+                }
+            }
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 10
+            LayoutMirroring.enabled: win.rightToLeft
+            LayoutMirroring.childrenInherit: true
+            Label {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignLeft
+                text: lookup.word
+                font.family: prose.font.family
+                font.pixelSize: Math.round(win.readingSize * 1.1)
+                font.bold: true
+                elide: Text.ElideRight
+            }
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(definitionText.implicitHeight, Math.round(win.height * 0.35))
+                visible: lookup.definition !== ""
+                Label {
+                    id: definitionText
+                    width: lookup.availableWidth
+                    text: lookup.definition
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                horizontalAlignment: Text.AlignLeft
+                visible: lookup.definition === ""
+                color: win.muted
+                wrapMode: Text.Wrap
+                text: lookup.waiting ? qsTr("Looking up…")
+                    : backend.canLookUp() ? qsTr("The dictionary has nothing for this.")
+                    : qsTr("No dictionary is installed. sdcv with a StarDict dictionary, or dictd, gives definitions here.")
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Esc to close")
+                    color: win.muted
+                    font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                }
+                Button {
+                    text: qsTr("Look up online")
+                    flat: true
+                    Material.roundedScale: theme.radius
+                    onClicked: {
+                        Qt.openUrlExternally("https://en.wiktionary.org/wiki/" + encodeURIComponent(lookup.word.toLowerCase()))
+                        lookup.close()
+                    }
+                }
+            }
+        }
+    }
+
     // How a flowing book's text is set. It sits at the bottom without dimming
     // the page, so each change shows on the text behind it. Up and Down choose
     // a setting, Left and Right change it, and S or Escape close it.
@@ -1640,7 +1976,9 @@ ApplicationWindow {
     Popup {
         id: contents
         objectName: "contents"
-        property bool marks: false
+        // Which list: 0 the contents, 1 the bookmarks, 2 the highlights and notes.
+        property int tab: 0
+        function nextTab() { tab = (tab + 1) % 3 }
         anchors.centerIn: Overlay.overlay
         width: Math.min(600, win.width - 64)
         height: Math.min(contentsColumn.implicitHeight + topPadding + bottomPadding, win.height - 96)
@@ -1655,15 +1993,18 @@ ApplicationWindow {
         // The list takes the keys as the panel starts to appear, not once its
         // opening animation ends, or a key pressed right after T is lost.
         onAboutToShow: {
-            marks = false
+            tab = 0
             focusList()
         }
-        onMarksChanged: if (visible) focusList()
+        onTabChanged: if (visible) focusList()
 
         function focusList() {
-            if (marks) {
+            if (tab === 1) {
                 markList.currentIndex = 0
                 markList.forceActiveFocus()
+            } else if (tab === 2) {
+                noteList.currentIndex = 0
+                noteList.forceActiveFocus()
             } else {
                 chapters.currentIndex = Math.max(0, backend.tocIndex)
                 chapters.positionViewAtIndex(chapters.currentIndex, ListView.Center)
@@ -1674,6 +2015,11 @@ ApplicationWindow {
             backend.goToEntry(index)
             win.hintBack()
             Qt.callLater(win.restore)
+            close()
+        }
+        function chooseNote(index) {
+            backend.goToHighlight(index)
+            win.hintBack()
             close()
         }
         function chooseMark(index) {
@@ -1711,26 +2057,30 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 spacing: 20
                 Repeater {
-                    model: [qsTr("Contents"), backend.bookmarks.length > 0
-                            ? qsTr("Bookmarks (%1)").arg(win.number(backend.bookmarks.length)) : qsTr("Bookmarks")]
+                    model: [qsTr("Contents"),
+                            backend.bookmarks.length > 0 ? qsTr("Bookmarks (%1)").arg(win.number(backend.bookmarks.length)) : qsTr("Bookmarks"),
+                            backend.highlights.length > 0 ? qsTr("Notes (%1)").arg(win.number(backend.highlights.length)) : qsTr("Notes")]
                     delegate: Label {
                         required property int index
                         required property string modelData
                         text: modelData
                         font.pixelSize: Math.round(win.uiSize * 10 / 7)
                         font.bold: true
-                        color: (index === 1) === contents.marks ? theme.foreground : win.muted
+                        color: index === contents.tab ? theme.foreground : win.muted
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: contents.marks = parent.index === 1
+                            onClicked: contents.tab = parent.index
                         }
                     }
                 }
-                Item { Layout.fillWidth: true }
-                // How far through the book, and how long is left.
+                // How far through the book, and how long is left, shortened to
+                // fit beside the tabs rather than widening the panel.
                 Label {
                     objectName: "contentsProgress"
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 0
+                    elide: Text.ElideRight
                     horizontalAlignment: Text.AlignRight
                     color: win.muted
                     text: backend.minutesLeftInBook > 0
@@ -1740,14 +2090,14 @@ ApplicationWindow {
             }
             Label {
                 Layout.fillWidth: true
-                visible: !contents.marks && chapters.count === 0
+                visible: contents.tab === 0 && chapters.count === 0
                 text: qsTr("This book has no table of contents. Use [ and ] to move between sections.")
                 color: win.muted
                 wrapMode: Text.Wrap
             }
             Label {
                 Layout.fillWidth: true
-                visible: contents.marks && markList.count === 0
+                visible: contents.tab === 1 && markList.count === 0
                 text: qsTr("No bookmarks yet. B marks the page you're on.")
                 color: win.muted
                 wrapMode: Text.Wrap
@@ -1758,14 +2108,14 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredHeight: contentHeight
-                visible: !contents.marks && count > 0
+                visible: contents.tab === 0 && count > 0
                 clip: true
                 model: backend.toc
                 highlightMoveDuration: 0
                 ScrollBar.vertical: ScrollBar {}
                 Keys.onReturnPressed: contents.choose(currentIndex)
                 Keys.onEnterPressed: contents.choose(currentIndex)
-                Keys.onTabPressed: contents.marks = true
+                Keys.onTabPressed: contents.nextTab()
 
                 delegate: Rectangle {
                     id: chapter
@@ -1815,7 +2165,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 Layout.preferredHeight: contentHeight
-                visible: contents.marks && count > 0
+                visible: contents.tab === 1 && count > 0
                 clip: true
                 model: backend.bookmarks
                 highlightMoveDuration: 0
@@ -1823,7 +2173,7 @@ ApplicationWindow {
                 Keys.onReturnPressed: if (currentIndex >= 0) contents.chooseMark(currentIndex)
                 Keys.onEnterPressed: if (currentIndex >= 0) contents.chooseMark(currentIndex)
                 Keys.onDeletePressed: if (currentIndex >= 0) backend.removeBookmark(currentIndex)
-                Keys.onTabPressed: contents.marks = false
+                Keys.onTabPressed: contents.nextTab()
 
                 delegate: Rectangle {
                     id: mark
@@ -1863,11 +2213,106 @@ ApplicationWindow {
             }
             Label {
                 Layout.fillWidth: true
+                visible: contents.tab === 2 && noteList.count === 0
+                text: qsTr("No highlights yet. Select words with the mouse to highlight them or write a note.")
+                color: win.muted
+                wrapMode: Text.Wrap
+            }
+            ListView {
+                id: noteList
+                objectName: "notebook"
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                Layout.preferredHeight: contentHeight
+                visible: contents.tab === 2 && count > 0
+                clip: true
+                spacing: 4
+                model: backend.highlights
+                highlightMoveDuration: 0
+                ScrollBar.vertical: ScrollBar {}
+                Keys.onReturnPressed: if (currentIndex >= 0) contents.chooseNote(currentIndex)
+                Keys.onEnterPressed: if (currentIndex >= 0) contents.chooseNote(currentIndex)
+                Keys.onDeletePressed: if (currentIndex >= 0) backend.removeHighlight(currentIndex)
+                Keys.onTabPressed: contents.nextTab()
+                Keys.onPressed: event => {
+                    if (event.key === Qt.Key_C && !(event.modifiers & Qt.ControlModifier)) {
+                        backend.copyNotes()
+                        win.say(qsTr("Copied as Markdown"))
+                        event.accepted = true
+                    }
+                }
+
+                delegate: Rectangle {
+                    id: noteRow
+                    required property int index
+                    required property var modelData
+                    width: ListView.view.width
+                    height: highlightColumn.implicitHeight + 16
+                    radius: Math.min(4, theme.radius)
+                    color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
+
+                    // The highlight's color, down its side.
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.leftMargin: 8
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 8
+                        width: 3
+                        color: win.highlightInk(noteRow.modelData.color)
+                    }
+                    ColumnLayout {
+                        id: highlightColumn
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: 22
+                        anchors.rightMargin: 12
+                        spacing: 3
+                        Label {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignLeft
+                            text: noteRow.modelData.chapter
+                            color: win.muted
+                            font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                            elide: Text.ElideRight
+                            visible: text !== ""
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignLeft
+                            text: noteRow.modelData.text
+                            font.family: prose.font.family
+                            wrapMode: Text.Wrap
+                            maximumLineCount: 3
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignLeft
+                            visible: noteRow.modelData.note !== ""
+                            text: noteRow.modelData.note
+                            color: win.muted
+                            font.italic: true
+                            wrapMode: Text.Wrap
+                            maximumLineCount: 4
+                            elide: Text.ElideRight
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        onClicked: contents.chooseNote(noteRow.index)
+                    }
+                }
+            }
+            Label {
+                Layout.fillWidth: true
                 horizontalAlignment: Text.AlignHCenter
                 color: win.muted
                 font.pixelSize: Math.round(win.uiSize * 6 / 7)
-                text: contents.marks ? qsTr("Enter to go there  ·  Delete to remove  ·  Tab for the contents")
-                                     : qsTr("Enter to go there  ·  Tab for bookmarks")
+                text: contents.tab === 2 ? qsTr("Enter to go there  ·  Delete to remove  ·  C to copy them all as Markdown")
+                    : contents.tab === 1 ? qsTr("Enter to go there  ·  Delete to remove  ·  Tab for notes")
+                    : qsTr("Enter to go there  ·  Tab for bookmarks")
             }
         }
     }
@@ -2159,7 +2604,7 @@ ApplicationWindow {
                     { keys: "]  [", action: qsTr("Next or previous section") },
                     { keys: "Home  End", action: qsTr("First or last section") },
                     { keys: "G", action: qsTr("Skim the book, or go to a page") },
-                    { keys: "T", action: qsTr("Contents and bookmarks") },
+                    { keys: "T", action: qsTr("Contents, bookmarks, and notes") },
                     { keys: "/  Ctrl+F", action: qsTr("Find in the book") },
                     { keys: "N  Shift+N", action: qsTr("Next or previous match") },
                     { keys: "Ctrl+C", action: qsTr("Copy the selected words") },
@@ -2170,6 +2615,7 @@ ApplicationWindow {
                     { keys: "V  S  Tab  /", action: qsTr("Library: covers or a list, the order, which books, search") },
                     { keys: "M", action: qsTr("Library: mark a book finished, or not") },
                     { keys: "B", action: qsTr("Bookmark the page, or remove its bookmark") },
+                    { keys: "H", action: qsTr("Highlight the words chosen; click one for a note or a color") },
                     { keys: "Tab  Enter", action: qsTr("Choose a link or note on the page, and open it") },
                     { keys: "Backspace  Shift+Backspace", action: qsTr("Back or forward after a jump") },
                     { keys: "P", action: qsTr("Show time left, the page, or the percent read") },

@@ -11,8 +11,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QProcess>
 #include <QQuickTextDocument>
 #include <QSaveFile>
+#include <QStandardPaths>
 #include <QTextBlock>
 #include <QTextCursor>
 #include <QTextDocument>
@@ -124,8 +126,17 @@ void Backend::readState() {
         Entry entry{book.value("path").toString(), book.value("title").toString(), book.value("author").toString(),
                     book.value("kind").toString(), book.value("section").toInt(), book.value("sections").toInt(),
                     std::clamp(book.value("position").toDouble(), 0.0, 1.0), qint64(book.value("opened").toDouble()),
-                    book.value("progress").toDouble(-1), {},
+                    book.value("progress").toDouble(-1), {}, {},
                     book.value("finished").toBool(), qint64(book.value("added").toDouble()), book.value("hidden").toBool()};
+        for (const QJsonValue &mark : book.value("highlights").toArray()) {
+            const QJsonObject m = mark.toObject();
+            Highlight h{m.value("section").toInt(), m.value("start").toInt(), m.value("end").toInt(),
+                        m.value("text").toString(), m.value("note").toString(), m.value("color").toString()};
+            if (!highlightColors().contains(h.color))
+                h.color = "yellow";
+            if (h.end > h.start)
+                entry.highlights << h;
+        }
         for (const QJsonValue &mark : book.value("bookmarks").toArray()) {
             const QJsonObject m = mark.toObject();
             entry.bookmarks << Entry::Bookmark{m.value("section").toInt(),
@@ -146,7 +157,16 @@ void Backend::save() {
                                  {"section", entry.section},   {"sections", entry.sections},
                                  {"position", entry.position}, {"opened", double(entry.opened)},
                                  {"progress", entry.progress}, {"finished", entry.finished},
-                                 {"added", double(entry.added)}, {"hidden", entry.hidden}, {"bookmarks", [&] {
+                                 {"added", double(entry.added)}, {"hidden", entry.hidden},
+                                 {"highlights", [&] {
+                                      QJsonArray marks;
+                                      for (const Highlight &h : entry.highlights)
+                                          marks.append(QJsonObject{{"section", h.section}, {"start", h.start},
+                                                                   {"end", h.end},         {"text", h.text},
+                                                                   {"note", h.note},       {"color", h.color}});
+                                      return marks;
+                                  }()},
+                                 {"bookmarks", [&] {
                                       QJsonArray marks;
                                       for (const Entry::Bookmark &mark : entry.bookmarks)
                                           marks.append(QJsonObject{{"section", mark.section},
@@ -308,28 +328,7 @@ QString Backend::chapterLabel() const {
 }
 
 QString Backend::chapterLabelFor(int section) const {
-    if (!m_book)
-        return {};
-    int index = -1;
-    for (int i = 0; i < m_book->toc.size(); ++i)
-        if (m_book->toc[i].section <= section)
-            index = i;
-    if (index < 0)
-        return {};
-    // The entry and the ones it sits under, nearest first.
-    QStringList chain;
-    int depth = m_book->toc[index].depth + 1;
-    for (int i = index; i >= 0 && depth > 0; --i) {
-        const TocEntry &entry = m_book->toc[i];
-        if (entry.depth >= depth)
-            continue;
-        depth = entry.depth;
-        if (entry.title.compare(m_book->title, Qt::CaseInsensitive) != 0)
-            chain.prepend(entry.title);
-    }
-    while (chain.size() > 2)
-        chain.removeFirst();
-    return chain.join(QStringLiteral("  ·  "));
+    return m_book ? m_book->chapterLabel(section) : QString();
 }
 
 int Backend::minutesLeftInChapter() const {
@@ -578,6 +577,7 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
     m_section = 0;
     m_position = 0;
     QList<Entry::Bookmark> bookmarks;
+    QList<Highlight> highlights;
     bool finished = false;
     qint64 added = 0;
     const auto it = std::find_if(m_library.begin(), m_library.end(),
@@ -586,13 +586,14 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
         m_section = std::clamp(it->section, 0, m_book->sectionCount() - 1);
         m_position = it->position;
         bookmarks = it->bookmarks;
+        highlights = it->highlights;
         finished = it->finished;
         added = it->added;
         m_library.erase(it);
     }
     m_library.prepend(Entry{m_book->path, m_book->title, m_book->author, m_book->kindName(), m_section,
                             m_book->sectionCount(), m_position, QDateTime::currentMSecsSinceEpoch(), progress(),
-                            bookmarks, finished, added, false});
+                            bookmarks, highlights, finished, added, false});
     // Enough to find any recent book again without the list becoming an
     // archive; books in a watched folder stay whatever their age.
     int opened = 0;
@@ -608,6 +609,7 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
     m_forward.clear();
     emit historyChanged();
     emit bookmarksChanged();
+    emit highlightsChanged();
     emit bookChanged();
     updateText();
     emit sectionChanged();
@@ -630,7 +632,7 @@ void Backend::forgetPath(const QString &path) {
         return path.startsWith(QDir::cleanPath(folder) + '/');
     });
     if (watched && QFileInfo::exists(path))
-        *it = Entry{path, it->title, it->author, it->kind, 0, it->sections, 0, 0, -1, {}, false, it->added, true};
+        *it = Entry{path, it->title, it->author, it->kind, 0, it->sections, 0, 0, -1, {}, {}, false, it->added, true};
     else
         m_library.erase(it);
     emit libraryChanged();
@@ -776,7 +778,7 @@ void Backend::scanFolders() {
         const QString suffix = info.suffix().toLower();
         const QString kind = suffix == "pdf" ? "pdf" : suffix == "epub" ? "epub"
                            : suffix.startsWith("cb") ? "comic" : suffix == "txt" ? "text" : "markdown";
-        m_library << Entry{path, Book::titleFromFileName(path), {}, kind, 0, 0, 0, 0, -1, {}, false,
+        m_library << Entry{path, Book::titleFromFileName(path), {}, kind, 0, 0, 0, 0, -1, {}, {}, false,
                            info.birthTime().isValid() ? info.birthTime().toMSecsSinceEpoch()
                                                       : info.lastModified().toMSecsSinceEpoch(), false};
         changed = true;
@@ -823,6 +825,7 @@ void Backend::close() {
     m_forward.clear();
     emit historyChanged();
     emit bookmarksChanged();
+    emit highlightsChanged();
     emit bookChanged();
     updateText();
     emit sectionChanged();
@@ -886,6 +889,181 @@ QVariantList Backend::bookmarks() const {
         list << QVariantMap{{"section", mark.section}, {"position", mark.position},
                             {"text", mark.text},       {"chapter", chapterLabelFor(mark.section)}};
     return list;
+}
+
+QVariantList Backend::highlights() const {
+    QVariantList list;
+    if (!m_book || m_library.isEmpty() || m_library.first().path != m_book->path)
+        return list;
+    for (const Highlight &h : m_library.first().highlights)
+        list << QVariantMap{{"section", h.section}, {"start", h.start}, {"end", h.end}, {"text", h.text},
+                            {"note", h.note},       {"color", h.color}, {"chapter", chapterLabelFor(h.section)}};
+    return list;
+}
+
+int Backend::addHighlight(int start, int end, const QString &text, const QString &color) {
+    Entry *entry = openEntry();
+    if (!entry || end <= start || !highlightColors().contains(color))
+        return -1;
+    auto &marks = entry->highlights;
+    // What it overlaps gives way, and passes on its note.
+    QStringList notes;
+    marks.removeIf([&](const Highlight &h) {
+        const bool overlaps = h.section == m_section && h.start < end && start < h.end;
+        if (overlaps && !h.note.trimmed().isEmpty())
+            notes << h.note.trimmed();
+        return overlaps;
+    });
+    marks << Highlight{m_section, start, end, text.trimmed(), notes.join("\n\n"), color};
+    std::sort(marks.begin(), marks.end(), [](const Highlight &a, const Highlight &b) {
+        return std::tie(a.section, a.start) < std::tie(b.section, b.start);
+    });
+    emit highlightsChanged();
+    scheduleSave();
+    return highlightAt(start);
+}
+
+int Backend::highlightAt(int position) const {
+    if (!m_book || m_library.isEmpty() || m_library.first().path != m_book->path)
+        return -1;
+    const auto &marks = m_library.first().highlights;
+    for (int i = 0; i < marks.size(); ++i)
+        if (marks[i].section == m_section && marks[i].start <= position && position < marks[i].end)
+            return i;
+    return -1;
+}
+
+void Backend::setHighlightColor(int index, const QString &color) {
+    Entry *entry = openEntry();
+    if (!entry || index < 0 || index >= entry->highlights.size() || !highlightColors().contains(color))
+        return;
+    entry->highlights[index].color = color;
+    emit highlightsChanged();
+    scheduleSave();
+}
+
+void Backend::setHighlightNote(int index, const QString &note) {
+    Entry *entry = openEntry();
+    if (!entry || index < 0 || index >= entry->highlights.size())
+        return;
+    entry->highlights[index].note = note.trimmed();
+    emit highlightsChanged();
+    scheduleSave();
+}
+
+void Backend::removeHighlight(int index) {
+    Entry *entry = openEntry();
+    if (!entry || index < 0 || index >= entry->highlights.size())
+        return;
+    entry->highlights.removeAt(index);
+    emit highlightsChanged();
+    scheduleSave();
+}
+
+void Backend::goToHighlight(int index) {
+    const Entry *entry = openEntry();
+    if (!entry || index < 0 || index >= entry->highlights.size())
+        return;
+    const Highlight mark = entry->highlights[index];
+    markPlace();
+    goTo(mark.section, 0);
+    setTarget(mark.start);
+}
+
+void Backend::paintHighlights(QQuickTextDocument *document, const QVariantMap &colors) const {
+    QTextDocument *text = document ? document->textDocument() : nullptr;
+    if (!text || !m_book)
+        return;
+    // Painted with a mark of its own, so the old paint can be taken off
+    // without touching the book's own formatting.
+    constexpr int painted = QTextFormat::UserProperty + 10;
+    // What is to be painted, and whether this document already shows it: the
+    // paint changes the text, which the window answers by painting again.
+    QString wanted;
+    if (!m_library.isEmpty() && m_library.first().path == m_book->path)
+        for (const Highlight &h : m_library.first().highlights)
+            if (h.section == m_section)
+                wanted += QString("%1-%2-%3;").arg(h.start).arg(h.end).arg(colors.value(h.color).value<QColor>().name());
+    if (m_painting || (text->property("omareadPaint").toString() == wanted
+                       && text->property("omareadRevision").toInt() == text->revision()))
+        return;
+    // The window hears of the change while it's being made, and asks again.
+    m_painting = true;
+    QTextCursor cursor(text);
+    cursor.beginEditBlock();
+    QList<std::pair<int, int>> old;
+    for (QTextBlock block = text->begin(); block.isValid(); block = block.next())
+        for (auto it = block.begin(); !it.atEnd(); ++it)
+            if (it.fragment().charFormat().boolProperty(painted))
+                old << std::pair{it.fragment().position(), it.fragment().position() + it.fragment().length()};
+    for (const auto &[from, to] : old) {
+        QTextCursor fragment(text);
+        fragment.setPosition(from);
+        fragment.setPosition(to, QTextCursor::KeepAnchor);
+        QTextCharFormat format = fragment.charFormat();
+        format.clearBackground();
+        format.clearProperty(painted);
+        fragment.setCharFormat(format);
+    }
+    if (!m_library.isEmpty() && m_library.first().path == m_book->path) {
+        const int length = text->characterCount() - 1;
+        for (const Highlight &h : m_library.first().highlights) {
+            if (h.section != m_section || h.start >= length)
+                continue;
+            QTextCursor range(text);
+            range.setPosition(std::clamp(h.start, 0, length));
+            range.setPosition(std::clamp(h.end, 0, length), QTextCursor::KeepAnchor);
+            QTextCharFormat format;
+            format.setBackground(colors.value(h.color).value<QColor>());
+            format.setProperty(painted, true);
+            range.mergeCharFormat(format);
+        }
+    }
+    cursor.endEditBlock();
+    text->setProperty("omareadPaint", wanted);
+    text->setProperty("omareadRevision", text->revision());
+    m_painting = false;
+}
+
+void Backend::copyNotes() {
+    const Entry *entry = openEntry();
+    if (!entry || !m_book)
+        return;
+    copyText(m_book->notesMarkdown(entry->highlights));
+}
+
+bool Backend::canLookUp() const {
+    return !QStandardPaths::findExecutable("sdcv").isEmpty() || !QStandardPaths::findExecutable("dict").isEmpty();
+}
+
+void Backend::lookUp(const QString &asked) {
+    const QString word = asked.simplified().left(80);
+    QString program = QStandardPaths::findExecutable("sdcv");
+    QStringList arguments{"--non-interactive", "--utf8-output", "--utf8-input", word};
+    if (program.isEmpty()) {
+        program = QStandardPaths::findExecutable("dict");
+        arguments = {word};
+    }
+    if (word.isEmpty() || program.isEmpty()) {
+        emit lookedUp(word, {});
+        return;
+    }
+    auto *process = new QProcess(this);
+    // A dictionary server that doesn't answer isn't waited on for long.
+    QTimer::singleShot(5000, process, [process] { process->kill(); });
+    connect(process, &QProcess::finished, this, [this, process, word](int code, QProcess::ExitStatus status) {
+        process->deleteLater();
+        QString text = QString::fromUtf8(process->readAllStandardOutput()).trimmed();
+        if (status != QProcess::NormalExit || code != 0 || text.startsWith("Nothing similar")
+            || text.startsWith("No definitions"))
+            text.clear();
+        emit lookedUp(word, text.left(4000));
+    });
+    process->start(program, arguments);
+}
+
+QString Backend::stateFile() {
+    return defaultStateDirectory() + "/library.json";
 }
 
 bool Backend::toggleBookmark(double from, double to, const QString &text) {

@@ -6,6 +6,8 @@ A book reader for [Omarchy](https://omarchy.org). EPUBs, comics and PDF books, r
 
 Omaread is for reading books from start to finish. EPUBs flow in the theme's colors at the desktop's text size, comics (CBZ, CBR, CB7, CBT) turn a page at a time or two side by side, and PDF and comic pages can be tinted to match the theme. It follows the Omarchy theme and language as they change. Markdown and plain text open too. Filling in forms, annotating and printing PDFs are left to a document viewer.
 
+Choose words with the mouse to highlight them in one of four colors, write a note on them, copy them, or look them up in a dictionary installed on the computer (`sdcv` or `dictd`). The contents' Notes tab lists every highlight and note in reading order; `C` there copies them all as Markdown, and `omaread highlights` prints them. Highlighting works in EPUB, Markdown and text books.
+
 The footer names the part and chapter you're in, and tells the time left in the chapter at your own reading pace, which it learns as you read; `P` switches it to the time left in the book, the page, or the percent read. Pages are counted as Space turns them, at the window's size and the reading settings, so a book's page count follows them. Progress counts only the book's text, by its words, so title pages, the imprint and the endnotes don't move it.
 
 The library shows your books as covers (`V` switches to a list), most recent first; `S` changes the order to title, author or progress, `Tab` shows only the books you're reading, haven't started or have finished, and `/` searches titles and authors. A book is marked finished when you reach its end, and `M` marks one by hand. Books you put in `~/Books` join the library by themselves. Covers are kept small in `~/.cache/omaread/covers`.
@@ -28,6 +30,7 @@ The same reading works without a window, for scripts and coding agents. Each com
 omaread info book.epub              # title, author, format, sections and contents
 omaread text book.epub --section 3  # the words of one section, or of the whole book
 omaread search manual.pdf vec3      # where words appear, section by section
+omaread highlights book.epub        # your highlights and notes, as Markdown
 omaread skill install               # teach coding agents to use these commands
 ```
 
@@ -46,6 +49,7 @@ omaread skill install               # teach coding agents to use these commands
 | `Backspace` `Shift+Backspace` | Back to where a jump left, and on again |
 | `T` | Contents, with page numbers, and bookmarks (`Tab` switches) |
 | `B` | Bookmark the page, or remove its bookmark |
+| `H` | Highlight the words chosen with the mouse; click a highlight for its color, a note, copying or looking up |
 | `/` `Ctrl+F` | Find in the book |
 | `N` `Shift+N` | Next or previous match |
 | `Ctrl+C` | Copy the selected words |

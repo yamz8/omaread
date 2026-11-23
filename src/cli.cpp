@@ -10,6 +10,7 @@
 #include <QSaveFile>
 #include <cstdio>
 
+#include "backend.h"
 #include "book.h"
 
 namespace {
@@ -167,6 +168,49 @@ int search(const QStringList &arguments) {
     return 0;
 }
 
+// The reader's highlights and notes in a book, as the library keeps them:
+// Markdown to keep or share, or JSON.
+int highlights(const QStringList &arguments) {
+    Command command("highlights", "Print the passages highlighted in a book, and the notes on them, as Markdown.");
+    command.book();
+    command.json();
+    command.password();
+    command.parser.process(arguments);
+    const auto book = open(command);
+    if (!book)
+        return 1;
+    QList<Highlight> marks;
+    QFile state(Backend::stateFile());
+    if (state.open(QIODevice::ReadOnly)) {
+        const QJsonArray books = QJsonDocument::fromJson(state.readAll()).object().value("books").toArray();
+        for (const QJsonValue &value : books) {
+            const QJsonObject entry = value.toObject();
+            if (entry.value("path").toString() != book->path)
+                continue;
+            for (const QJsonValue &mark : entry.value("highlights").toArray()) {
+                const QJsonObject m = mark.toObject();
+                marks << Highlight{m.value("section").toInt(), m.value("start").toInt(), m.value("end").toInt(),
+                                   m.value("text").toString(), m.value("note").toString(), m.value("color").toString()};
+            }
+        }
+    }
+    if (command.isJson()) {
+        QJsonArray list;
+        for (const Highlight &h : std::as_const(marks))
+            list.append(QJsonObject{{"section", h.section + 1}, {"chapter", book->chapterLabel(h.section)},
+                                    {"text", h.text},           {"note", h.note},
+                                    {"color", h.color}});
+        print(QJsonObject{{"title", book->title}, {"author", book->author}, {"highlights", list}});
+        return 0;
+    }
+    if (marks.isEmpty()) {
+        print(stdout, "No highlights in " + book->title + " yet.");
+        return 0;
+    }
+    fputs(book->notesMarkdown(marks).toUtf8().constData(), stdout);
+    return 0;
+}
+
 // As Hype and Signed do: one shared copy, linked into Claude Code, found
 // directly by Codex.
 int skill(const QStringList &arguments) {
@@ -235,12 +279,13 @@ QString cliSummary() {
            "  info <file>                  Title, author, format, sections and contents\n"
            "  text <file>                  The words, of the whole book or one section\n"
            "  search <file> <words>        Where words appear, section by section\n"
+           "  highlights <file>            The passages highlighted, and the notes on them\n"
            "  skill [install]              Print the skill for coding agents, or install it\n\n"
            "Each command takes --json, and --password for a locked PDF.";
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"info", "text", "search", "skill", "help"}.contains(word);
+    return QStringList{"info", "text", "search", "highlights", "skill", "help"}.contains(word);
 }
 
 int runCli(const QStringList &arguments) {
@@ -248,6 +293,7 @@ int runCli(const QStringList &arguments) {
     return command == "info"     ? info(arguments)
            : command == "text"   ? text(arguments)
            : command == "search" ? search(arguments)
+           : command == "highlights" ? highlights(arguments)
            : command == "skill"  ? skill(arguments)
                                  : help(arguments);
 }

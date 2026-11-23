@@ -281,6 +281,52 @@ std::shared_ptr<Book> Book::load(const QString &path, int id, Error *error, cons
     return book;
 }
 
+QString Book::chapterLabel(int section) const {
+    int index = -1;
+    for (int i = 0; i < toc.size(); ++i)
+        if (toc[i].section <= section)
+            index = i;
+    if (index < 0)
+        return {};
+    // The entry and the ones it sits under, nearest first.
+    QStringList chain;
+    int depth = toc[index].depth + 1;
+    for (int i = index; i >= 0 && depth > 0; --i) {
+        const TocEntry &entry = toc[i];
+        if (entry.depth >= depth)
+            continue;
+        depth = entry.depth;
+        if (entry.title.compare(title, Qt::CaseInsensitive) != 0)
+            chain.prepend(entry.title);
+    }
+    while (chain.size() > 2)
+        chain.removeFirst();
+    return chain.join(QStringLiteral("  ·  "));
+}
+
+QString Book::notesMarkdown(const QList<Highlight> &highlights) const {
+    QString out = "# " + title + '\n';
+    if (!author.isEmpty())
+        out += '\n' + author + '\n';
+    QString chapter = QStringLiteral("\x01");
+    for (const Highlight &highlight : highlights) {
+        const QString label = chapterLabel(highlight.section).replace(QStringLiteral("  ·  "), QStringLiteral(" · "));
+        if (label != chapter) {
+            chapter = label;
+            if (!label.isEmpty())
+                out += "\n## " + label + '\n';
+        }
+        // A quotation, line by line, and the note under it.
+        QString quote;
+        for (const QString &line : highlight.text.split(QRegularExpression("[\\n\\x{2029}\\x{2028}]+"), Qt::SkipEmptyParts))
+            quote += "> " + line.simplified() + '\n';
+        out += '\n' + quote;
+        if (!highlight.note.trimmed().isEmpty())
+            out += '\n' + highlight.note.trimmed() + '\n';
+    }
+    return out;
+}
+
 QImage Book::cover(int height) const {
     QImage image;
     switch (kind) {
