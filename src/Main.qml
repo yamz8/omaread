@@ -169,9 +169,26 @@ ApplicationWindow {
         const html = backend.note(link)
         if (html !== "")
             note.show(html, link)
-        else if (!backend.followLink(link))
+        else if (backend.followLink(link))
+            hintBack()
+        else
             Qt.openUrlExternally(link)
     }
+    // Back and forward through the places jumps left. A jump says once or
+    // twice that Backspace returns, until the reader knows.
+    property int backHints: 0
+    function hintBack() {
+        if (backHints < 2) {
+            ++backHints
+            say(qsTr("Backspace to go back"))
+        }
+    }
+    function markJump() {
+        backend.markPlace()
+        hintBack()
+    }
+    function goBack() { if (backend.goBack()) Qt.callLater(restore) }
+    function goForward() { if (backend.goForward()) Qt.callLater(restore) }
     function jump(section, position) {
         if (section === backend.section) {
             backend.goTo(section, position)
@@ -378,8 +395,10 @@ ApplicationWindow {
     Shortcut { sequences: ["Up", "K"]; enabled: win.reading; onActivated: win.scroll(-60) }
     Shortcut { sequence: "]"; enabled: win.reading; onActivated: win.jump(backend.section + win.step, 0) }
     Shortcut { sequence: "["; enabled: win.reading; onActivated: win.jump(Math.max(0, backend.section - win.step), 0) }
-    Shortcut { sequence: "Home"; enabled: win.reading; onActivated: win.jump(0, 0) }
-    Shortcut { sequence: "End"; enabled: win.reading; onActivated: win.jump(backend.sectionCount - 1, 0) }
+    Shortcut { sequence: "Home"; enabled: win.reading; onActivated: { win.markJump(); win.jump(0, 0) } }
+    Shortcut { sequence: "End"; enabled: win.reading; onActivated: { win.markJump(); win.jump(backend.sectionCount - 1, 0) } }
+    Shortcut { sequences: ["Backspace", "Alt+Left"]; enabled: win.reading && backend.canGoBack; onActivated: win.goBack() }
+    Shortcut { sequences: ["Shift+Backspace", "Alt+Right"]; enabled: win.reading && backend.canGoForward; onActivated: win.goForward() }
     Shortcut { sequence: "T"; enabled: backend.open && (!win.busy || contents.opened); onActivated: contents.opened ? contents.close() : contents.open() }
     Shortcut { sequence: "G"; enabled: win.reading; onActivated: goDialog.open() }
     Shortcut { sequences: ["/", StandardKey.Find]; enabled: backend.open && settled && !help.opened && !contents.opened && !goDialog.opened; onActivated: win.startFinding() }
@@ -680,7 +699,7 @@ ApplicationWindow {
                                         highlight: theme.accent
                                         width: Math.round(spreadRow.pageHeight * win.aspect(modelData))
                                         height: Math.round(spreadRow.pageHeight)
-                                        onFollow: (target, url) => target >= 0 ? win.jump(target, 0) : Qt.openUrlExternally(url)
+                                        onFollow: (target, url) => { if (target >= 0) { win.markJump(); win.jump(target, 0) } else Qt.openUrlExternally(url) }
                                         onSelectionStarted: {
                                             prose.deselect()
                                             for (let i = 0; i < sheets.count; ++i)
@@ -1145,7 +1164,8 @@ ApplicationWindow {
         }
         function go() {
             close()
-            backend.followLink(link)
+            if (backend.followLink(link))
+                win.hintBack()
         }
         x: Math.round((win.width - width) / 2)
         y: win.height - height - 8
@@ -1258,6 +1278,7 @@ ApplicationWindow {
 
         function choose(index) {
             backend.goToEntry(index)
+            win.hintBack()
             Qt.callLater(win.restore)
             close()
         }
@@ -1342,8 +1363,10 @@ ApplicationWindow {
         onOpened: { pageField.text = ""; pageField.forceActiveFocus() }
         onAccepted: {
             const n = parseInt(pageField.text)
-            if (n >= 1 && n <= backend.sectionCount)
+            if (n >= 1 && n <= backend.sectionCount) {
+                win.markJump()
                 win.jump(n - 1, 0)
+            }
         }
 
         TextField {
@@ -1454,6 +1477,7 @@ ApplicationWindow {
                     { keys: "W", action: qsTr("Fit pages to the width or the window") },
                     { keys: "D", action: qsTr("One page or two side by side") },
                     { keys: "I", action: qsTr("Color pages like the theme") },
+                    { keys: "Backspace  Shift+Backspace", action: qsTr("Back or forward after a jump") },
                     { keys: "P", action: qsTr("Show time left, the page, or the percent read") },
                     { keys: "S", action: qsTr("Reading settings: typeface, spacing, column") },
                     { keys: "A", action: qsTr("Change how pages turn") },

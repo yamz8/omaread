@@ -84,6 +84,8 @@ class Backend : public QObject {
     // The book's pages at the window's size and the reading settings, as Space
     // turns them; 0 while they are being counted, and for a PDF or comic.
     Q_PROPERTY(int pageCount READ pageCount NOTIFY pagesChanged)
+    Q_PROPERTY(bool canGoBack READ canGoBack NOTIFY historyChanged)
+    Q_PROPERTY(bool canGoForward READ canGoForward NOTIFY historyChanged)
     Q_PROPERTY(int minutesLeftInChapter READ minutesLeftInChapter NOTIFY positionChanged)
     Q_PROPERTY(int minutesLeftInBook READ minutesLeftInBook NOTIFY positionChanged)
     // The reader's pace, learned from how long a screen takes to read.
@@ -162,6 +164,8 @@ public:
     static QStringList transitions() { return {"slide", "flip", "cover", "fade", "none"}; }
     QString chapterLabel() const;
     int pageCount() const;
+    bool canGoBack() const { return !m_back.isEmpty(); }
+    bool canGoForward() const { return !m_forward.isEmpty(); }
     int minutesLeftInChapter() const;
     int minutesLeftInBook() const;
     double wordsPerMinute() const { return m_wordsPerMinute; }
@@ -194,6 +198,11 @@ public:
     Q_INVOKABLE void goToEntry(int tocIndex);
     // Follows a link inside the book, and says whether it was one.
     Q_INVOKABLE bool followLink(const QString &link);
+    // The places left by jumps (the contents, a link, Go to, a search), to
+    // go back to with Backspace and on to again, as a browser does.
+    Q_INVOKABLE void markPlace();
+    Q_INVOKABLE bool goBack();
+    Q_INVOKABLE bool goForward();
     // The footnote or endnote a link inside the book points at, as HTML to
     // show in place, or an empty string when it points at something else.
     Q_INVOKABLE QString note(const QString &link) const;
@@ -247,6 +256,7 @@ signals:
     // reader's place until the new text is laid out and the place restored.
     void textAboutToChange();
     void pagesChanged();
+    void historyChanged();
     void targetChanged();
     void searchChanged();
     void hitChanged();
@@ -296,6 +306,11 @@ private:
     int m_target = -1;
     QString m_text;
     QColor m_ink;
+    struct Place {
+        int section = 0;
+        double position = 0;
+    };
+    QList<Place> m_back, m_forward;
     Layout::Page m_page;
     QList<QList<double>> m_pages;
     QList<int> m_pagesBefore;

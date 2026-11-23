@@ -515,6 +515,9 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
 
     setTarget(-1);
     updateLinks();
+    m_back.clear();
+    m_forward.clear();
+    emit historyChanged();
     emit bookChanged();
     updateText();
     emit sectionChanged();
@@ -551,6 +554,9 @@ void Backend::close() {
     m_position = 0;
     setTarget(-1);
     m_links.clear();
+    m_back.clear();
+    m_forward.clear();
+    emit historyChanged();
     emit bookChanged();
     updateText();
     emit sectionChanged();
@@ -585,6 +591,7 @@ void Backend::goToEntry(int index) {
     if (!m_book || index < 0 || index >= m_book->toc.size())
         return;
     const TocEntry &entry = m_book->toc[index];
+    markPlace();
     goTo(entry.section, 0);
     setTarget(m_book->fragmentOffset(entry.section, entry.fragment));
 }
@@ -600,6 +607,40 @@ QString Backend::note(const QString &link) const {
     return html.isEmpty() ? QString() : Styling::sized(Book::withInk(html, m_ink), m_readingSize);
 }
 
+void Backend::markPlace() {
+    if (!m_book)
+        return;
+    // Twice in the same place, as a second jump from where the first landed
+    // before reading on, is one place to go back to.
+    if (!m_back.isEmpty() && m_back.last().section == m_section && qAbs(m_back.last().position - m_position) < 0.001)
+        return;
+    m_back << Place{m_section, m_position};
+    while (m_back.size() > 50)
+        m_back.removeFirst();
+    m_forward.clear();
+    emit historyChanged();
+}
+
+bool Backend::goBack() {
+    if (!m_book || m_back.isEmpty())
+        return false;
+    m_forward << Place{m_section, m_position};
+    const Place place = m_back.takeLast();
+    goTo(place.section, place.position);
+    emit historyChanged();
+    return true;
+}
+
+bool Backend::goForward() {
+    if (!m_book || m_forward.isEmpty())
+        return false;
+    m_back << Place{m_section, m_position};
+    const Place place = m_forward.takeLast();
+    goTo(place.section, place.position);
+    emit historyChanged();
+    return true;
+}
+
 bool Backend::followLink(const QString &link) {
     if (!m_book)
         return false;
@@ -607,6 +648,7 @@ bool Backend::followLink(const QString &link) {
     const int section = m_book->sectionForLink(link, &fragment);
     if (section < 0)
         return false;
+    markPlace();
     goTo(section, 0);
     setTarget(m_book->fragmentOffset(section, fragment));
     return true;
@@ -627,6 +669,8 @@ void Backend::find(const QString &words) {
         clearSearch();
         return;
     }
+    // Back from a search returns to where it began.
+    markPlace();
     if (m_searchCancel)
         *m_searchCancel = true;
     m_searchCancel = std::make_shared<std::atomic_bool>(false);

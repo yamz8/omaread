@@ -1262,6 +1262,29 @@ private slots:
         QTest::qWait(300);
         QCOMPARE(backend.position(), 0.0);
         QCOMPARE(view->property("contentY").toDouble(), 0.0);
+
+        // A jump leaves a place to come back to: halfway down the first chapter,
+        // End goes to the last, Backspace returns, and Shift+Backspace goes on.
+        QVERIFY(!backend.canGoBack());
+        QTest::keyClick(window, Qt::Key_Home);
+        QCOMPARE(backend.section(), 0);
+        backend.setPosition(0.5);
+        QMetaObject::invokeMethod(window, "restore");
+        QTest::keyClick(window, Qt::Key_End);
+        QCOMPARE(backend.section(), 1);
+        QVERIFY(backend.canGoBack());
+        QTest::keyClick(window, Qt::Key_Backspace);
+        QCOMPARE(backend.section(), 0);
+        QCOMPARE(backend.position(), 0.5);
+        QTRY_VERIFY(view->property("contentY").toDouble() > 1000);
+        QVERIFY(backend.canGoForward());
+        QTest::keyClick(window, Qt::Key_Backspace, Qt::ShiftModifier);
+        QCOMPARE(backend.section(), 1);
+        // The contents' jumps can be gone back from too.
+        backend.goToEntry(0);
+        QCOMPARE(backend.section(), 0);
+        QVERIFY(backend.goBack());
+        QCOMPARE(backend.section(), 1);
     }
 
     void windowCountsPagesAsSpaceTurnsThem() {
