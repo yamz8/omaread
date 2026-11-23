@@ -746,6 +746,11 @@ ApplicationWindow {
                     property: "readingWidth"
                     value: prose.width
                 }
+                Binding {
+                    target: backend
+                    property: "readingSize"
+                    value: win.readingSize
+                }
 
                 // Searching the book: Enter for the next match, Shift+Enter for
                 // the one before, Escape to stop.

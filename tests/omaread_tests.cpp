@@ -30,6 +30,7 @@
 #include "book.h"
 #include "filepicker.h"
 #include "pageprovider.h"
+#include "stylesheet.h"
 #include "theme.h"
 #include "translator.h"
 
@@ -397,6 +398,83 @@ private slots:
 
         // Images never come out wider than the text.
         QVERIFY(Book::fitImages(one, 500).contains("width=\"500\" height=\"125\""));
+    }
+
+    void booksKeepTheirOwnStyling() {
+        const auto sheet = Styling::Sheet::parse("\n"
+            "            @charset \"utf-8\";\n"
+            "            @namespace epub \"http://www.idpf.org/2007/ops\";\n"
+            "            /* A comment { with braces } */\n"
+            "            p { margin-top: 0; margin-bottom: 0; text-indent: 1em; color: red; line-height: 3; }\n"
+            "            h2 + p, hr + p { text-indent: 0; }\n"
+            "            h2 { font-variant: small-caps; text-align: center; font-size: 1.5em; margin: 2em 0 1em; }\n"
+            "            .sc { font-variant: all-small-caps; }\n"
+            "            [epub|type~=\"z3998:poem\"] p > span { display: block; padding-left: 1em; text-indent: -1em; }\n"
+            "            [epub|type~=\"z3998:poem\"] .i1 { padding-left: 2em; }\n"
+            "            .offscreen { position: absolute; left: -999em; }\n"
+            "            .gone { display: none; }\n"
+            "            hr { width: 25%; }\n"
+            "            p:first-child { font-style: italic; }\n"
+            "            blockquote p:not(.plain) { font-weight: bold; }\n"
+            "            p::first-letter { font-size: 3em; }\n"
+            "            @media (prefers-color-scheme: dark) { p { font-weight: bold; } }\n"
+            "            @supports (font-variant-numeric: oldstyle-nums) { .old { text-transform: uppercase; } }\n"
+            "        ");
+        const QByteArray xhtml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\">\n"
+            "<head><title>T</title><link rel=\"stylesheet\" href=\"../css/core.css\"/></head>\n"
+            "<body><section epub:type=\"chapter\">\n"
+            "<h2 class=\"offscreen\">Hidden</h2>\n"
+            "<h2>Chapter</h2>\n"
+            "<p>First <span class=\"sc\">Words</span> here.</p>\n"
+            "<p>Second.</p>\n"
+            "<hr/>\n"
+            "<p class=\"old\">After the break.</p>\n"
+            "<blockquote epub:type=\"z3998:poem\"><p><span>One line,</span><br/><span class=\"i1\">and an indented one.</span></p></blockquote>\n"
+            "<blockquote><p class=\"plain\">Plain.</p></blockquote>\n"
+            "<p class=\"gone\">Never shown.</p>\n"
+            "<p style=\"text-align: right; color: blue\">Signed.</p>\n"
+            "</section></body></html>";
+
+        QStringList hrefs, inlineCss;
+        Styling::linkedSheets(xhtml, &hrefs, &inlineCss);
+        QCOMPARE(hrefs, QStringList({"../css/core.css"}));
+        const QString html = Styling::apply(xhtml, {&sheet});
+        QVERIFY(!html.isNull());
+        // Hidden and undisplayed elements are gone; colors and line height never come.
+        QVERIFY(!html.contains("Hidden"));
+        QVERIFY(!html.contains("Never shown"));
+        QVERIFY(!html.contains("color"));
+        QVERIFY(!html.contains("line-height"));
+        // A sectioning element becomes a block Qt knows.
+        QVERIFY(html.startsWith("<div epub:type=\"chapter\">"));
+        // The heading: small caps, centered, larger, with its margins in that size.
+        QVERIFY(html.contains("<h2 style=\"font-size: 1.5qe; text-align: center; margin-right: 0qe; margin-left: 0qe; "
+                              "font-variant: small-caps; margin-top: 3qe; margin-bottom: 1.5qe\">Chapter</h2>"));
+        // The paragraph after the heading isn't indented, the next one is; the first
+        // child is italic; ::first-letter and @media never apply.
+        QVERIFY(html.contains("<p style=\"text-indent: 0qe; margin-top: 0qe; margin-bottom: 0qe\">First "));
+        QVERIFY(html.contains("<p style=\"text-indent: 1qe; margin-top: 0qe; margin-bottom: 0qe\">Second.</p>"));
+        QVERIFY(html.contains("<span style=\"font-variant: small-caps\">Words</span>"));
+        QVERIFY(html.contains("<hr width=\"25%\" />"));
+        // @supports rules apply.
+        QVERIFY(html.contains("text-transform: uppercase; margin-top: 0qe; margin-bottom: 0qe\">After the break."));
+        // A poem's lines become blocks with hanging indents, as the book sets them.
+        // The paragraph's own margins move to its first and last lines, since Qt
+        // drops a block's bottom margin when it holds other blocks.
+        QVERIFY(html.contains("<p style=\"text-indent: 1qe; font-style: italic; font-weight: bold\">"
+                              "<div style=\"text-indent: -1qe; margin-left: 1qe; margin-top: 0qe\">One line,</div>"));
+        QVERIFY(html.contains("<div style=\"text-indent: -1qe; margin-left: 2qe; margin-bottom: 0qe\">and an indented one.</div>"));
+        // :not() leaves the plain paragraph alone.
+        QVERIFY(!html.contains("font-weight: bold\">Plain."));
+        // The element's own style wins.
+        QVERIFY(html.contains("text-align: right"));
+
+        // Lengths follow the reading text size.
+        QCOMPARE(Styling::sized("<p style=\"text-indent: 1.5qe; margin-left: -2qe\">1qe</p>", 20),
+                 QString("<p style=\"text-indent: 30px; margin-left: -40px\">1qe</p>"));
+        // A chapter that isn't XML is left for the reader to read another way.
+        QVERIFY(Styling::apply("<html><body><p>Unclosed</body></html>", {&sheet}).isNull());
     }
 
     void inkImagesTakeTheThemeColor() {

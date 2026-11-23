@@ -67,7 +67,7 @@ cmake --install build --prefix ~/.local   # put it in the app launcher
 ## How it reads
 
 - **PDF**: drawn page by page with poppler, as Signed draws them, along with its outline, links and words to search and copy.
-- **EPUB**: each chapter is laid out as text in the theme's colors and your text size. The book's own colors and fonts are left out, and its images are scaled to fit. Links between chapters, and to places inside them, are followed inside the reader. The table of contents comes from the EPUB 3 nav document, or from the EPUB 2 NCX.
+- **EPUB**: each chapter is laid out as text in the theme's colors and your text size, the way the book itself sets it: first-line indents, small capitals, centered headings and scene breaks, epigraphs, and the indented lines of poems all come from the book's own stylesheet. Its colors, line height and typeface are left out, so every book follows the theme and the reading settings, and its images are scaled to fit. Links between chapters, and to places inside them, are followed inside the reader. The table of contents comes from the EPUB 3 nav document, or from the EPUB 2 NCX.
 - **Comics**: the images in a ZIP, RAR, 7z or tar archive, in page-number order.
 - **Markdown**: one section for each first- and second-level heading, and those headings make up the table of contents.
 - **Text**: split into sections of about 20,000 characters, always between paragraphs.

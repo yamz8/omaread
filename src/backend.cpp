@@ -20,6 +20,7 @@
 #include <algorithm>
 
 #include "portalfilepicker.h"
+#include "stylesheet.h"
 
 namespace {
 
@@ -252,6 +253,14 @@ void Backend::setReadingWidth(int width) {
     updateText();
 }
 
+void Backend::setReadingSize(int size) {
+    if (size == m_readingSize || size <= 0)
+        return;
+    m_readingSize = size;
+    emit readingWidthChanged();
+    updateText();
+}
+
 void Backend::setTextScale(double scale) {
     scale = std::clamp(scale, 0.8, 4.0);
     if (qFuzzyCompare(scale, m_textScale))
@@ -333,7 +342,7 @@ void Backend::updateText() {
     if (m_book && !m_book->paged() && m_section < m_book->sections.size()) {
         text = m_book->sections[m_section];
         if (m_book->kind == Book::Kind::Epub)
-            text = Book::withInk(Book::fitImages(text, m_readingWidth), m_ink);
+            text = Styling::sized(Book::withInk(Book::fitImages(text, m_readingWidth), m_ink), m_readingSize);
     }
     if (text != m_text) {
         m_text = text;

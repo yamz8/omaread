@@ -65,6 +65,8 @@ class Backend : public QObject {
 
     // The width the text is laid out in, so an EPUB's images fit inside it.
     Q_PROPERTY(int readingWidth READ readingWidth WRITE setReadingWidth NOTIFY readingWidthChanged)
+    // The reading text's size in pixels, which a book's own spacing is measured in.
+    Q_PROPERTY(int readingSize READ readingSize WRITE setReadingSize NOTIFY readingWidthChanged)
     // The reading text's size as a multiple of the desktop's text size.
     Q_PROPERTY(double textScale READ textScale WRITE setTextScale NOTIFY settingsChanged)
     Q_PROPERTY(bool tintPages READ tintPages WRITE setTintPages NOTIFY settingsChanged)
@@ -128,6 +130,8 @@ public:
     QVariantList pageHits() const;
 
     int readingWidth() const { return m_readingWidth; }
+    int readingSize() const { return m_readingSize; }
+    void setReadingSize(int size);
     void setReadingWidth(int width);
     double textScale() const { return m_textScale; }
     void setTextScale(double scale);
@@ -257,6 +261,7 @@ private:
     std::shared_ptr<std::atomic_bool> m_searchCancel;
 
     int m_readingWidth = 0;
+    int m_readingSize = 18;
     double m_textScale = defaultTextScale;
     bool m_tintPages = false;
     // A book reads best in a serif, as printed books are set.

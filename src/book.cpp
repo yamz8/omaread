@@ -1,4 +1,5 @@
 #include "book.h"
+#include "stylesheet.h"
 
 #include <QBuffer>
 #include <QCollator>
@@ -415,13 +416,40 @@ bool Book::loadEpub(Error *error) {
         return out + text.mid(last);
     };
 
+    // Each stylesheet is read once, however many chapters link to it.
+    QHash<QString, std::shared_ptr<Styling::Sheet>> sheets;
+    auto sheet = [&](const QString &path) {
+        auto &cached = sheets[path];
+        if (!cached)
+            cached = std::make_shared<Styling::Sheet>(Styling::Sheet::parse(decodeText(files.value(path))));
+        return cached;
+    };
+
     for (int index = 0; index < spine.size(); ++index) {
         const QString &chapter = spine[index];
-        QString html = decodeText(files.value(chapter));
-        const auto body = bodyPattern.match(html);
-        if (body.hasMatch())
-            html = body.captured(1);
-        html.remove(dropPattern);
+        // The book's own styling, resolved onto each element. A chapter that
+        // isn't well-formed XML is read as plain HTML, with only its inline styles.
+        const QByteArray xhtml = xmlEntities(files.value(chapter));
+        QStringList hrefs, inlineCss;
+        Styling::linkedSheets(xhtml, &hrefs, &inlineCss);
+        QList<std::shared_ptr<Styling::Sheet>> held;
+        for (const QString &href : std::as_const(hrefs))
+            if (const QString path = resolve(chapter, href); files.contains(path))
+                held << sheet(path);
+        for (const QString &css : std::as_const(inlineCss))
+            held << std::make_shared<Styling::Sheet>(Styling::Sheet::parse(css));
+        QList<const Styling::Sheet *> cascade;
+        for (const auto &s : std::as_const(held))
+            cascade << s.get();
+        QString html = Styling::apply(xhtml, cascade);
+        const bool styled = !html.isNull();
+        if (!styled) {
+            html = decodeText(files.value(chapter));
+            const auto body = bodyPattern.match(html);
+            if (body.hasMatch())
+                html = body.captured(1);
+            html.remove(dropPattern);
+        }
         // Images first, so the ones the SVG pass makes aren't rewritten again.
         html = replaceAll(html, imgPattern, [&](const QRegularExpressionMatch &match) {
             return image(chapter, attribute(match.captured(), "src"), decodeHtml(attribute(match.captured(), "alt")));
@@ -440,23 +468,31 @@ bool Book::loadEpub(Error *error) {
         });
         // Links to other chapters are followed inside the reader; the rest
         // open in the browser.
+        // An anchor keeps its id, which a link or the contents may point at,
+        // and its style, as a footnote's raised number has.
         html = replaceAll(html, linkPattern, [&](const QRegularExpressionMatch &match) {
-            const QString href = decodeHtml(attribute(match.captured(), "href"));
+            const QString tag = match.captured();
+            QString kept;
+            for (const QString name : {"id", "name", "style"})
+                if (const QString value = attribute(tag, name); !value.isEmpty())
+                    kept += ' ' + name + "=\"" + value + '"';
+            const QString href = decodeHtml(attribute(tag, "href"));
             if (href.isEmpty())
-                return QString("<a>");
+                return "<a" + kept + ">";
             if (!QUrl(href).scheme().isEmpty())
-                return "<a href=\"" + escapeAttribute(href) + "\">";
+                return "<a href=\"" + escapeAttribute(href) + "\"" + kept + ">";
             const int target = int(spine.indexOf(resolve(chapter, href)));
             const QString fragment = QUrl(href).fragment(QUrl::FullyDecoded);
-            return target < 0 ? QString("<a>")
-                              : QString("<a href=\"omaread:%1%2\">")
+            return target < 0 ? "<a" + kept + ">"
+                              : QString("<a href=\"omaread:%1%2\"%3>")
                                     .arg(target)
-                                    .arg(fragment.isEmpty() ? QString() : "#" + escapeAttribute(fragment));
+                                    .arg(fragment.isEmpty() ? QString() : "#" + escapeAttribute(fragment), kept);
         });
-        html = replaceAll(html, stylePattern, [&](const QRegularExpressionMatch &match) {
-            const QString style = keptStyle(decodeHtml(match.captured(1).mid(1, match.captured(1).size() - 2)));
-            return style.isEmpty() ? QString() : " style=\"" + escapeAttribute(style) + "\"";
-        });
+        if (!styled)
+            html = replaceAll(html, stylePattern, [&](const QRegularExpressionMatch &match) {
+                const QString style = keptStyle(decodeHtml(match.captured(1).mid(1, match.captured(1).size() - 2)));
+                return style.isEmpty() ? QString() : " style=\"" + escapeAttribute(style) + "\"";
+            });
         sections << html.trimmed();
         aspects << 0;
     }
@@ -863,21 +899,36 @@ QImage Book::inked(const QImage &source, const QColor &ink) {
 }
 
 QString Book::fitImages(const QString &html, int width) {
-    if (width <= 0)
-        return html;
     static const QRegularExpression sized("<img src=\"([^\"]*)\" width=\"(\\d+)\" height=\"(\\d+)\"");
     QString out;
     qsizetype last = 0;
-    for (auto it = sized.globalMatch(html); it.hasNext();) {
+    if (width > 0) {
+        for (auto it = sized.globalMatch(html); it.hasNext();) {
+            const auto match = it.next();
+            const int w = match.captured(2).toInt(), h = match.captured(3).toInt();
+            out += html.mid(last, match.capturedStart() - last);
+            if (w > width && w > 0)
+                out += QString("<img src=\"%1\" width=\"%2\" height=\"%3\"").arg(match.captured(1)).arg(width).arg(
+                    qMax(1, int(double(h) * width / w)));
+            else
+                out += match.captured();
+            last = match.capturedEnd();
+        }
+    }
+    out += html.mid(last);
+    // A centered block holding only an image (see Styling): the left margin
+    // that centers the image in the column.
+    static const QRegularExpression centered(
+        "margin-left: centered(\"[^>]*>\\s*<img src=\"[^\"]*\" width=\"(\\d+)\")");
+    QString result;
+    last = 0;
+    for (auto it = centered.globalMatch(out); it.hasNext();) {
         const auto match = it.next();
-        const int w = match.captured(2).toInt(), h = match.captured(3).toInt();
-        out += html.mid(last, match.capturedStart() - last);
-        if (w > width && w > 0)
-            out += QString("<img src=\"%1\" width=\"%2\" height=\"%3\"").arg(match.captured(1)).arg(width).arg(
-                qMax(1, int(double(h) * width / w)));
-        else
-            out += match.captured();
+        const int margin = width > 0 ? std::max(0, (width - match.captured(2).toInt()) / 2) : 0;
+        result += out.mid(last, match.capturedStart() - last) + QString("margin-left: %1px").arg(margin)
+                  + match.captured(1);
         last = match.capturedEnd();
     }
-    return out + html.mid(last);
+    result += out.mid(last);
+    return result.replace("margin-left: centered", "margin-left: 0px");
 }
