@@ -8,6 +8,7 @@
 #include <QQmlContext>
 #include <QQuickItem>
 #include <QQuickStyle>
+#include <QQuickTextDocument>
 #include <QQuickWindow>
 #include <QRegularExpression>
 #include <QTemporaryDir>
@@ -955,6 +956,39 @@ private slots:
         run = omaread({"skill"});
         QCOMPARE(run.code, 0);
         QVERIFY(run.out.startsWith("---\nname: omaread"));
+    }
+
+    void windowShowsAChaptersImagesAfterAJump() {
+        QTemporaryDir dir, files;
+        Translator translator(dir.path() + "/language");
+        Theme theme(dir.path());
+        FakePicker picker;
+        Backend backend(dir.path() + "/state", &picker);
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("translator", &translator);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.addImageProvider("omaread", backend.createPageProvider());
+        engine.load(QUrl("qrc:/Main.qml"));
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        QTRY_VERIFY(window->property("settled").toBool());
+        backend.setTransition("none");
+
+        // The second chapter's picture is first asked for after the jump to it.
+        backend.openFile(writeEpub(files.path()));
+        QTRY_VERIFY(backend.isOpen());
+        backend.goTo(1);
+        auto *prose = item(window->contentItem(), "prose");
+        QVERIFY(prose);
+        const QUrl wide(Book::resourceUrl(backend.bookId(), "OEBPS/images/wide.png"));
+        QTRY_VERIFY(prose->property("text").toString().contains(wide.toString()));
+        auto *document = prose->property("textDocument").value<QQuickTextDocument *>();
+        QVERIFY(document);
+        const QVariant image = document->textDocument()->resource(QTextDocument::ImageResource, wide);
+        QVERIFY(image.isValid());
+        QCOMPARE(image.value<QImage>().width(), 2000);
     }
 
     void windowReadsFromTheKeyboard() {

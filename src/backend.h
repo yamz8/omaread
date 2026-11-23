@@ -160,6 +160,9 @@ public:
     // Opens up a chapter's lines for reading, as a factor of their height.
     // TextEdit has no line height of its own, so it is set on every block.
     Q_INVOKABLE void spaceLines(QQuickTextDocument *document, double factor, double paragraphGap = 0);
+    // Puts a chapter's images into its document as it arrives. Left to the
+    // TextEdit, an image it hasn't drawn before loads late and is never shown.
+    Q_INVOKABLE void loadImages(QQuickTextDocument *document);
 
     // Writes the library now rather than after the pause that gathers changes.
     void save();

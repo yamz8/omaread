@@ -634,7 +634,10 @@ ApplicationWindow {
                                 selectionColor: theme.accent
                                 selectedTextColor: theme.accentForeground
                                 readonly property real paragraphGap: Math.round(win.readingSize * 0.75)
-                                onTextChanged: backend.spaceLines(textDocument, 1.35, paragraphGap)
+                                onTextChanged: {
+                                    backend.loadImages(textDocument)
+                                    backend.spaceLines(textDocument, 1.35, paragraphGap)
+                                }
                                 onParagraphGapChanged: backend.spaceLines(textDocument, 1.35, paragraphGap)
                                 onLinkActivated: link => { if (!backend.followLink(link)) Qt.openUrlExternally(link) }
 

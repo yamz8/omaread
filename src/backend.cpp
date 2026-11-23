@@ -586,6 +586,31 @@ void Backend::copyText(const QString &text) {
         clipboard->setText(text);
 }
 
+void Backend::loadImages(QQuickTextDocument *document) {
+    QTextDocument *text = document ? document->textDocument() : nullptr;
+    if (!text || !m_book || m_book->kind != Book::Kind::Epub)
+        return;
+    static const QString scheme = "image://omaread/";
+    bool added = false;
+    for (QTextBlock block = text->begin(); block.isValid(); block = block.next()) {
+        for (auto it = block.begin(); !it.atEnd(); ++it) {
+            const QTextCharFormat format = it.fragment().charFormat();
+            if (!format.isImageFormat())
+                continue;
+            const QString name = format.toImageFormat().name();
+            if (!name.startsWith(scheme) || text->resource(QTextDocument::ImageResource, QUrl(name)).isValid())
+                continue;
+            const QImage image = PageProvider::image(*m_book, name.mid(scheme.size()), {});
+            if (image.isNull())
+                continue;
+            text->addResource(QTextDocument::ImageResource, QUrl(name), image);
+            added = true;
+        }
+    }
+    if (added)
+        text->markContentsDirty(0, text->characterCount());
+}
+
 void Backend::spaceLines(QQuickTextDocument *document, double factor, double paragraphGap) {
     QTextDocument *text = document ? document->textDocument() : nullptr;
     if (!text || text->isEmpty())
