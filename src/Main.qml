@@ -2680,21 +2680,10 @@ ApplicationWindow {
                     }
                 }
             }
-            // Keeps the hints at the foot when the tab has nothing to list.
+            // Holds a message for an empty tab at the top.
             Item {
                 Layout.fillHeight: true
                 visible: !chapters.visible && !markList.visible && !noteList.visible
-            }
-            Label {
-                Layout.fillWidth: true
-                horizontalAlignment: Text.AlignLeft
-                color: win.muted
-                wrapMode: Text.Wrap
-                font.pixelSize: Math.round(win.uiSize * 6 / 7)
-                text: (contents.tab === 2 ? qsTr("Enter to go there  ·  Delete to remove  ·  C to copy them all as Markdown")
-                     : contents.tab === 1 ? qsTr("Enter to go there  ·  Delete to remove  ·  Tab for notes")
-                     : qsTr("Enter to go there  ·  Tab for bookmarks"))
-                      + "\n" + qsTr("T or Esc to close")
             }
         }
     }
@@ -3016,7 +3005,9 @@ ApplicationWindow {
                         { title: qsTr("Marking"), keys: [
                             { keys: "B", action: qsTr("Bookmark the page, or remove its bookmark") },
                             { keys: "H", action: qsTr("Highlight the words chosen; click one for a note or a color") },
-                            { keys: "Ctrl+C", action: qsTr("Copy the selected words") } ] },
+                            { keys: "Ctrl+C", action: qsTr("Copy the selected words") },
+                            { keys: "Delete", action: qsTr("In the sidebar: remove a bookmark or highlight") },
+                            { keys: "C", action: qsTr("In Notes: copy them all as Markdown") } ] },
                         { title: qsTr("Comics and PDFs"), keys: [
                             { keys: "D  W  I", action: qsTr("Two pages, fit to the width, tint like the theme") },
                             { keys: "C", action: qsTr("Trim the white margins of a PDF's or comic's pages") },
