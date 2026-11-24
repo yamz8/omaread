@@ -136,6 +136,8 @@ class Backend : public QObject {
     Q_PROPERTY(bool justify READ justify WRITE setJustify NOTIFY settingsChanged)
     // Whether the contents sidebar is open, so a book opens with it as the last was left.
     Q_PROPERTY(bool sidebar READ sidebar WRITE setSidebar NOTIFY settingsChanged)
+    // Whether the notebook pane is open, likewise.
+    Q_PROPERTY(bool notebookShown READ notebookShown WRITE setNotebookShown NOTIFY settingsChanged)
 
 public:
     static constexpr double defaultTextScale = 1.5;
@@ -253,6 +255,8 @@ public:
     void setJustify(bool justify);
     bool sidebar() const { return m_sidebar; }
     void setSidebar(bool sidebar);
+    bool notebookShown() const { return m_notebookShown; }
+    void setNotebookShown(bool shown);
     static QStringList typefaces() { return {"serif", "sans"}; }
     static QStringList lineSpacings() { return {"compact", "normal", "relaxed"}; }
     static QStringList columnWidths() { return {"narrow", "medium", "wide"}; }
@@ -502,6 +506,7 @@ private:
     QString m_columnWidth = "medium";
     bool m_justify = false;
     bool m_sidebar = false;
+    bool m_notebookShown = false;
     bool m_spread = false;
     QString m_transition = "slide";
     QTimer m_saveTimer;

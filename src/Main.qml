@@ -51,16 +51,28 @@ ApplicationWindow {
     readonly property int columnChars: backend.columnWidth === "narrow" ? 28 : backend.columnWidth === "wide" ? 42 : 34
 
     // Single-key shortcuts rest while a popup or the search field has the keyboard.
-    readonly property bool busy: help.opened || contents.visible || skim.visible || passwordDialog.opened
+    readonly property bool busy: help.opened || contents.visible || notebook.visible || skim.visible || passwordDialog.opened
                                  // From the moment it appears, not once its opening animation ends,
                                  // or a key pressed right after S turns the page behind it.
                                  || settings.visible || note.visible || selectionBar.visible || noteEditor.visible
                                  || lookup.visible
                                  || findField.activeFocus || shelfSearch.activeFocus
     readonly property bool reading: backend.open && !busy && settled
-    // How much of the window's side the contents sidebar takes, eased as it slides.
-    property real sideInset: contents.visible ? contents.width : 0
-    Behavior on sideInset { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+    // How much of the window's sides the panes take, eased as they slide:
+    // the contents' at the start of a line's direction, the notebook's at its end.
+    property real contentsInset: contents.visible ? contents.width : 0
+    property real notebookInset: notebook.visible ? notebook.width : 0
+    Behavior on contentsInset { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+    Behavior on notebookInset { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+    // A pane closing gives the keys to the other one still open, or the page.
+    function giveKeysBack() {
+        if (contents.visible)
+            chapters.forceActiveFocus()
+        else if (notebook.visible)
+            noteList.forceActiveFocus()
+        else
+            view.forceActiveFocus()
+    }
     readonly property bool browsing: !backend.open && !busy && settled
     readonly property bool shelfKeys: browsing && !shelfSearch.activeFocus
 
@@ -745,10 +757,15 @@ ApplicationWindow {
         function onBookChanged() {
             win.restoring = true; win.panelView = false; win.zoom = 1; win.finding = false; win.screenStarted = Date.now(); Qt.callLater(win.restore)
             // The contents sidebar comes back with the next book, as it was left.
-            if (backend.open && backend.sidebar)
-                Qt.callLater(contents.open)
-            else if (!backend.open)
+            if (backend.open) {
+                if (backend.sidebar)
+                    Qt.callLater(contents.open)
+                if (backend.notebookShown)
+                    Qt.callLater(notebook.open)
+            } else {
                 contents.close()
+                notebook.close()
+            }
         }
         function onSectionChanged() { win.restoring = true; win.clearSelections(); Qt.callLater(win.restore) }
         // New text, for a new section or a new text size: its layout moves the
@@ -829,10 +846,11 @@ ApplicationWindow {
     Shortcut { sequences: ["Return", "Enter"]; enabled: win.reading && win.chosenLink !== null; onActivated: win.openChosenLink() }
     Shortcut { sequences: ["Backspace", "Alt+Left"]; enabled: win.reading && backend.canGoBack; onActivated: win.goBack() }
     Shortcut { sequences: ["Shift+Backspace", "Alt+Right"]; enabled: win.reading && backend.canGoForward; onActivated: win.goForward() }
-    Shortcut { sequence: "T"; enabled: backend.open && (!win.busy || contents.visible); onActivated: contents.toggle() }
+    Shortcut { sequence: "T"; enabled: backend.open && (!win.busy || contents.visible || notebook.visible); onActivated: contents.toggle() }
+    Shortcut { sequence: "Ctrl+N"; enabled: backend.open && (!win.busy || contents.visible || notebook.visible); onActivated: notebook.toggle() }
     Shortcut { sequence: "G"; enabled: win.reading; onActivated: skim.open() }
     Shortcut { sequences: ["/", StandardKey.Find]; enabled: win.shelfKeys && backend.library.length > 0; onActivated: shelfSearch.forceActiveFocus() }
-    Shortcut { sequences: ["/", StandardKey.Find]; enabled: backend.open && settled && !help.opened && !contents.visible && !skim.visible; onActivated: win.startFinding() }
+    Shortcut { sequences: ["/", StandardKey.Find]; enabled: backend.open && settled && !help.opened && !contents.visible && !notebook.visible && !skim.visible; onActivated: win.startFinding() }
     Shortcut { sequences: ["N", StandardKey.FindNext]; enabled: win.reading && backend.hitCount > 0; onActivated: backend.nextHit() }
     Shortcut { sequences: ["Shift+N", StandardKey.FindPrevious]; enabled: win.reading && backend.hitCount > 0; onActivated: backend.previousHit() }
     Shortcut { sequences: ["+", "="]; enabled: win.reading; onActivated: win.resize(1) }
@@ -1365,16 +1383,15 @@ ApplicationWindow {
                                 Accessible.name: backend.chapterLabel || backend.title
                                 readonly property int margin: 40
                                 visible: !backend.paged
-                                // Beside the contents sidebar: centered in what it leaves of
-                                // the window, or as far from it as the window allows. The
-                                // text never changes width, and with it the page count, so
-                                // on a narrow window the sidebar lies over part of it.
+                                // Centered between the panes open beside it, as far as the
+                                // window allows. The text never changes width, and with it
+                                // the page count, so on a narrow window a pane lies over it.
                                 x: {
-                                    const centered = (view.width - width) / 2
-                                    const room = view.width - win.sideInset
-                                    if (win.rightToLeft)
-                                        return Math.min(centered, Math.max((room - width) / 2, 16))
-                                    return Math.max(centered, Math.min(win.sideInset + (room - width) / 2, view.width - width - 16))
+                                    // The panes' sides as they are on screen.
+                                    const left = win.rightToLeft ? win.notebookInset : win.contentsInset
+                                    const right = win.rightToLeft ? win.contentsInset : win.notebookInset
+                                    const between = left + (view.width - left - right - width) / 2
+                                    return Math.max(Math.min(between, view.width - width - 16), Math.min(16, (view.width - width) / 2))
                                 }
                                 y: margin
                                 width: Math.max(200, Math.min(view.width - 2 * 32, win.readingSize * win.columnChars))
@@ -1684,10 +1701,10 @@ ApplicationWindow {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
-                    // Beside the contents sidebar, which runs the window's full
-                    // height; mirroring puts both on the right together.
-                    anchors.leftMargin: 16 + win.sideInset
-                    anchors.rightMargin: 16
+                    // Between the panes, which run the window's full height;
+                    // mirroring swaps the two sides with them.
+                    anchors.leftMargin: 16 + win.contentsInset
+                    anchors.rightMargin: 16 + win.notebookInset
                     height: Math.round(win.uiSize * 2.3)
                     spacing: 16
 
@@ -2310,18 +2327,16 @@ ApplicationWindow {
         }
     }
 
-    // The contents, and the notes (bookmarks, highlights and what's written on
-    // them, in reading order), a tab each, in a sidebar the window's full
-    // height beside the page: Up and Down to choose, Enter to go there and
-    // stay, Tab to switch, Delete to remove, T or Escape to close and give the
-    // keys back to the page.
+    // As Kindle's desktop app has them: the contents in a pane at the window's
+    // left (T) and the notebook, bookmarks, highlights and notes in reading
+    // order, in one at its right (Ctrl+N), each its full height and either or
+    // both open with the page between them. Up and Down choose, Enter goes
+    // there and leaves the pane open, Escape or the pane's key closes it.
     Popup {
         id: contents
         objectName: "contents"
-        // Which list: 0 the contents, 1 the notes.
-        property int tab: 0
-        function nextTab() { tab = (tab + 1) % 2 }
-        // T and Escape remember the choice; leaving a book closes it without.
+        // The pane's key and Escape remember the choice; leaving a book
+        // closes it without.
         function toggle() {
             backend.sidebar = !visible
             visible ? close() : open()
@@ -2343,7 +2358,7 @@ ApplicationWindow {
             Rectangle {
                 width: 1
                 height: parent.height
-                x: win.rightToLeft ? 0 : parent.width - 1
+                x: !win.rightToLeft ? parent.width - 1 : 0
                 color: theme.colors.selection
             }
         }
@@ -2353,52 +2368,17 @@ ApplicationWindow {
         exit: Transition {
             NumberAnimation { property: "x"; to: win.rightToLeft ? win.width : -contents.width; duration: 150; easing.type: Easing.InCubic }
         }
-        // The list takes the keys as the panel starts to appear, not once its
+        // The list takes the keys as the pane starts to appear, not once its
         // opening animation ends, or a key pressed right after T is lost.
-        onAboutToShow: focusList()
-        onTabChanged: if (visible) focusList()
-        // The page has the keys again.
-        onClosed: view.forceActiveFocus()
-
-        function focusList() {
-            if (tab === 1) {
-                noteList.currentIndex = 0
-                noteList.forceActiveFocus()
-            } else {
-                chapters.currentIndex = Math.max(0, backend.tocIndex)
-                chapters.positionViewAtIndex(chapters.currentIndex, ListView.Center)
-                chapters.forceActiveFocus()
-            }
+        onAboutToShow: {
+            chapters.currentIndex = Math.max(0, backend.tocIndex)
+            chapters.positionViewAtIndex(chapters.currentIndex, ListView.Center)
+            chapters.forceActiveFocus()
         }
+        onClosed: win.giveKeysBack()
+
         function choose(index) {
             backend.goToEntry(index)
-            win.hintBack()
-            Qt.callLater(win.restore)
-        }
-        // A row of the notes: a bookmark or a highlight.
-        function chooseNote(row) {
-            const mark = backend.notebook[row]
-            if (!mark)
-                return
-            if (mark.kind === "bookmark") {
-                backend.goToBookmark(mark.index)
-                Qt.callLater(win.restore)
-            } else {
-                backend.goToHighlight(mark.index)
-            }
-            win.hintBack()
-        }
-        function removeNote(row) {
-            const mark = backend.notebook[row]
-            if (!mark)
-                return
-            if (mark.kind === "bookmark")
-                backend.removeBookmark(mark.index)
-            else
-                backend.removeHighlight(mark.index)
-        }
-        function chooseMark(index) {
-            backend.goToBookmark(index)
             win.hintBack()
             Qt.callLater(win.restore)
         }
@@ -2420,7 +2400,6 @@ ApplicationWindow {
         }
 
         ColumnLayout {
-            id: contentsColumn
             anchors.fill: parent
             spacing: 12
             Keys.onEscapePressed: contents.toggle()
@@ -2428,44 +2407,17 @@ ApplicationWindow {
             LayoutMirroring.enabled: win.rightToLeft
             LayoutMirroring.childrenInherit: true
 
-            RowLayout {
+            Label {
                 Layout.fillWidth: true
-                Layout.bottomMargin: 8
-                spacing: 16
-                Repeater {
-                    model: [qsTr("Contents"), qsTr("Notes")]
-                    delegate: Label {
-                        id: tabLabel
-                        required property int index
-                        required property string modelData
-                        readonly property bool chosen: index === contents.tab
-                        text: modelData
-                        font.bold: true
-                        color: chosen ? theme.foreground : win.muted
-                        Accessible.role: Accessible.PageTab
-                        Accessible.name: modelData
-                        Accessible.selected: chosen
-                        Accessible.onPressAction: contents.tab = index
-                        // The chosen tab, underlined in the accent.
-                        Rectangle {
-                            visible: tabLabel.chosen
-                            anchors.top: parent.bottom
-                            anchors.topMargin: 4
-                            width: parent.width
-                            height: 2
-                            color: theme.accent
-                        }
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: contents.tab = tabLabel.index
-                        }
-                    }
-                }
+                Layout.bottomMargin: 6
+                horizontalAlignment: Text.AlignLeft
+                text: qsTr("Contents")
+                font.bold: true
+                font.pixelSize: Math.round(win.uiSize * 8 / 7)
             }
             Label {
                 Layout.fillWidth: true
-                visible: contents.tab === 0 && chapters.count === 0
+                visible: chapters.count === 0
                 text: qsTr("This book has no table of contents. Use [ and ] to move between sections.")
                 color: win.muted
                 wrapMode: Text.Wrap
@@ -2475,14 +2427,13 @@ ApplicationWindow {
                 objectName: "chapters"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: contents.tab === 0 && count > 0
+                visible: count > 0
                 clip: true
                 model: backend.toc
                 highlightMoveDuration: 0
                 ScrollBar.vertical: ScrollBar {}
                 Keys.onReturnPressed: contents.choose(currentIndex)
                 Keys.onEnterPressed: contents.choose(currentIndex)
-                Keys.onTabPressed: contents.nextTab()
 
                 delegate: Rectangle {
                     id: chapter
@@ -2530,28 +2481,159 @@ ApplicationWindow {
                     }
                 }
             }
+            Item {
+                Layout.fillHeight: true
+                visible: !chapters.visible
+            }
+        }
+    }
+
+    Popup {
+        id: notebook
+        objectName: "notebook"
+        // Which marks it lists: "all", "highlights", "notes" or "bookmarks".
+        property string filter: "all"
+        readonly property var filters: ["all", "highlights", "notes", "bookmarks"]
+        function nextFilter() { filter = filters[(filters.indexOf(filter) + 1) % filters.length] }
+        readonly property var marks: backend.notebook.filter(m =>
+            filter === "all" || (filter === "bookmarks" ? m.kind === "bookmark"
+                                : filter === "notes" ? m.kind === "highlight" && m.note !== ""
+                                : m.kind === "highlight"))
+        function toggle() {
+            backend.notebookShown = !visible
+            visible ? close() : open()
+        }
+        x: win.rightToLeft ? 0 : win.width - width
+        y: 0
+        width: Math.min(Math.round(win.uiSize * 23), win.width - 48)
+        height: win.height
+        modal: false
+        dim: false
+        focus: true
+        // Clicking the page keeps it open: words are chosen there to highlight.
+        closePolicy: Popup.NoAutoClose
+        padding: 16
+        topPadding: 20
+        background: Rectangle {
+            color: theme.background
+            // The edge toward the page.
+            Rectangle {
+                width: 1
+                height: parent.height
+                x: win.rightToLeft ? parent.width - 1 : 0
+                color: theme.colors.selection
+            }
+        }
+        enter: Transition {
+            NumberAnimation { property: "x"; from: win.rightToLeft ? -notebook.width : win.width; to: win.rightToLeft ? 0 : win.width - notebook.width; duration: 180; easing.type: Easing.OutCubic }
+        }
+        exit: Transition {
+            NumberAnimation { property: "x"; to: win.rightToLeft ? -notebook.width : win.width; duration: 150; easing.type: Easing.InCubic }
+        }
+        onAboutToShow: {
+            noteList.currentIndex = 0
+            noteList.forceActiveFocus()
+        }
+        onFilterChanged: noteList.currentIndex = 0
+        onClosed: win.giveKeysBack()
+
+        // A row: a bookmark or a highlight.
+        function choose(row) {
+            const mark = marks[row]
+            if (!mark)
+                return
+            if (mark.kind === "bookmark") {
+                backend.goToBookmark(mark.index)
+                Qt.callLater(win.restore)
+            } else {
+                backend.goToHighlight(mark.index)
+            }
+            win.hintBack()
+        }
+        function remove(row) {
+            const mark = marks[row]
+            if (!mark)
+                return
+            if (mark.kind === "bookmark")
+                backend.removeBookmark(mark.index)
+            else
+                backend.removeHighlight(mark.index)
+        }
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 12
+            Keys.onEscapePressed: notebook.toggle()
+            LayoutMirroring.enabled: win.rightToLeft
+            LayoutMirroring.childrenInherit: true
+
             Label {
                 Layout.fillWidth: true
-                visible: contents.tab === 1 && noteList.count === 0
-                text: qsTr("No bookmarks or highlights yet. B marks the page; select words with the mouse to highlight them or write a note.")
+                Layout.bottomMargin: 6
+                horizontalAlignment: Text.AlignLeft
+                text: qsTr("Notebook")
+                font.bold: true
+                font.pixelSize: Math.round(win.uiSize * 8 / 7)
+            }
+            // Which marks to list, as the library's filters are chosen.
+            Flow {
+                Layout.fillWidth: true
+                spacing: 6
+                Repeater {
+                    model: [{ key: "all", label: qsTr("All") }, { key: "highlights", label: qsTr("Highlights") },
+                            { key: "notes", label: qsTr("Notes") }, { key: "bookmarks", label: qsTr("Bookmarks") }]
+                    delegate: Rectangle {
+                        id: markChip
+                        required property var modelData
+                        readonly property bool chosen: notebook.filter === modelData.key
+                        implicitWidth: markChipLabel.implicitWidth + 18
+                        implicitHeight: Math.round(win.uiSize * 1.9)
+                        radius: Math.min(4, theme.radius)
+                        color: chosen ? theme.accent : "transparent"
+                        border.color: chosen ? "transparent" : theme.colors.selection
+                        Accessible.role: Accessible.RadioButton
+                        Accessible.name: modelData.label
+                        Accessible.checked: chosen
+                        Accessible.onPressAction: notebook.filter = modelData.key
+                        Label {
+                            id: markChipLabel
+                            anchors.centerIn: parent
+                            text: markChip.modelData.label
+                            font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                            color: markChip.chosen ? theme.accentForeground : theme.foreground
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: notebook.filter = markChip.modelData.key
+                        }
+                    }
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: noteList.count === 0
+                text: backend.notebook.length === 0
+                      ? qsTr("No bookmarks or highlights yet. B marks the page; select words with the mouse to highlight them or write a note.")
+                      : qsTr("Nothing of this kind yet.")
                 color: win.muted
                 wrapMode: Text.Wrap
             }
             ListView {
                 id: noteList
-                objectName: "notebook"
+                objectName: "notebookList"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: contents.tab === 1 && count > 0
+                visible: count > 0
                 clip: true
                 spacing: 4
-                model: backend.notebook
+                model: notebook.marks
                 highlightMoveDuration: 0
                 ScrollBar.vertical: ScrollBar {}
-                Keys.onReturnPressed: if (currentIndex >= 0) contents.chooseNote(currentIndex)
-                Keys.onEnterPressed: if (currentIndex >= 0) contents.chooseNote(currentIndex)
-                Keys.onDeletePressed: if (currentIndex >= 0) contents.removeNote(currentIndex)
-                Keys.onTabPressed: contents.nextTab()
+                Keys.onReturnPressed: if (currentIndex >= 0) notebook.choose(currentIndex)
+                Keys.onEnterPressed: if (currentIndex >= 0) notebook.choose(currentIndex)
+                Keys.onDeletePressed: if (currentIndex >= 0) notebook.remove(currentIndex)
+                Keys.onTabPressed: notebook.nextFilter()
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_C && !(event.modifiers & Qt.ControlModifier)) {
                         backend.copyNotes()
@@ -2572,7 +2654,7 @@ ApplicationWindow {
                     Accessible.role: Accessible.ListItem
                     Accessible.name: (noteRow.bookmark ? qsTr("Bookmark: %1").arg(noteRow.modelData.text) : noteRow.modelData.text)
                                      + (noteRow.modelData.note ? ". " + qsTr("Note: %1").arg(noteRow.modelData.note) : "")
-                    Accessible.onPressAction: contents.chooseNote(noteRow.index)
+                    Accessible.onPressAction: notebook.choose(noteRow.index)
 
                     // A highlight's color down its side; a bookmark's ribbon.
                     Rectangle {
@@ -2649,14 +2731,13 @@ ApplicationWindow {
                     }
                     MouseArea {
                         anchors.fill: parent
-                        onClicked: contents.chooseNote(noteRow.index)
+                        onClicked: notebook.choose(noteRow.index)
                     }
                 }
             }
-            // Holds a message for an empty tab at the top.
             Item {
                 Layout.fillHeight: true
-                visible: !chapters.visible && !noteList.visible
+                visible: !noteList.visible
             }
         }
     }
@@ -2969,7 +3050,8 @@ ApplicationWindow {
                             { keys: "+  −  0", action: qsTr("Larger, smaller, or reset text and pages") },
                             { keys: "F", action: qsTr("Full screen") } ] },
                         { title: qsTr("Finding your way"), keys: [
-                            { keys: "T", action: qsTr("Contents, bookmarks, and notes") },
+                            { keys: "T", action: qsTr("Contents") },
+                            { keys: "Ctrl+N", action: qsTr("Notebook: bookmarks, highlights and notes") },
                             { keys: "G", action: qsTr("Skim the book, or go to a page") },
                             { keys: "/  Ctrl+F", action: qsTr("Find in the book") },
                             { keys: "N  Shift+N", action: qsTr("Next or previous match") },
@@ -2979,8 +3061,8 @@ ApplicationWindow {
                             { keys: "B", action: qsTr("Bookmark the page, or remove its bookmark") },
                             { keys: "H", action: qsTr("Highlight the words chosen; click one for a note or a color") },
                             { keys: "Ctrl+C", action: qsTr("Copy the selected words") },
-                            { keys: "Delete", action: qsTr("In the sidebar: remove a bookmark or highlight") },
-                            { keys: "C", action: qsTr("In Notes: copy them all as Markdown") } ] },
+                            { keys: "Delete", action: qsTr("In the notebook: remove a bookmark or highlight") },
+                            { keys: "C", action: qsTr("In the notebook: copy it all as Markdown") } ] },
                         { title: qsTr("Comics and PDFs"), keys: [
                             { keys: "D  W  I", action: qsTr("Two pages, fit to the width, tint like the theme") },
                             { keys: "C", action: qsTr("Trim the white margins of a PDF's or comic's pages") },

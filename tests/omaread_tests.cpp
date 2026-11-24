@@ -1610,25 +1610,32 @@ private slots:
         QCOMPARE(backend.section(), 0);
         QVERIFY(backend.goBack());
         QCOMPARE(backend.section(), 1);
-        // B marks the page, its corner shows it, and the notes, the
-        // contents' second tab, list it: Enter goes there.
+        // B marks the page, its corner shows it, and the notebook, Ctrl+N's
+        // pane, lists it: Enter goes there.
         QTest::keyClick(window, Qt::Key_B);
         QCOMPARE(backend.bookmarks().size(), 1);
         QTRY_VERIFY(window->property("bookmarkHere").toBool());
         QTest::keyClick(window, Qt::Key_Home);
         QVERIFY(!window->property("bookmarkHere").toBool());
-        QTest::keyClick(window, Qt::Key_T);
-        QObject *contents = window->findChild<QObject *>("contents");
-        QTRY_VERIFY(contents->property("opened").toBool());
-        QTest::keyClick(window, Qt::Key_Tab);
-        QCOMPARE(contents->property("tab").toInt(), 1);
+        QTest::keyClick(window, Qt::Key_N, Qt::ControlModifier);
+        QObject *notebook = window->findChild<QObject *>("notebook");
+        QTRY_VERIFY(notebook->property("opened").toBool());
         QTest::keyClick(window, Qt::Key_Return);
         QCOMPARE(backend.section(), 1);
         QTRY_VERIFY(window->property("bookmarkHere").toBool());
-        // The sidebar stays beside the page until T closes it.
-        QVERIFY(contents->property("visible").toBool());
-        QTest::keyClick(window, Qt::Key_T);
-        QTRY_VERIFY(!contents->property("visible").toBool());
+        // Tab steps through what it lists: highlights alone leave the
+        // bookmark out, bookmarks alone bring it back.
+        QTest::keyClick(window, Qt::Key_Tab);
+        QCOMPARE(notebook->property("filter").toString(), QString("highlights"));
+        QCOMPARE(notebook->property("marks").toList().size(), 0);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QTest::keyClick(window, Qt::Key_Tab);
+        QCOMPARE(notebook->property("filter").toString(), QString("bookmarks"));
+        QCOMPARE(notebook->property("marks").toList().size(), 1);
+        // The pane stays beside the page until Ctrl+N closes it.
+        QVERIFY(notebook->property("visible").toBool());
+        QTest::keyClick(window, Qt::Key_N, Qt::ControlModifier);
+        QTRY_VERIFY(!notebook->property("visible").toBool());
     }
 
     void windowCountsPagesAsSpaceTurnsThem() {
@@ -1732,15 +1739,13 @@ private slots:
         QTRY_VERIFY(!bar->property("visible").toBool());
         // The notebook lists it, and Enter goes there.
         backend.goTo(0, 1);
-        QTest::keyClick(window, Qt::Key_T);
-        QObject *contents = window->findChild<QObject *>("contents");
-        QTRY_VERIFY(contents->property("visible").toBool());
-        QTest::keyClick(window, Qt::Key_Tab);
-        QCOMPARE(contents->property("tab").toInt(), 1);
+        QTest::keyClick(window, Qt::Key_N, Qt::ControlModifier);
+        QObject *notebook = window->findChild<QObject *>("notebook");
+        QTRY_VERIFY(notebook->property("visible").toBool());
         QTest::keyClick(window, Qt::Key_Return);
         QCOMPARE(backend.target(), 8);
         QTest::keyClick(window, Qt::Key_Escape);
-        QTRY_VERIFY(!contents->property("visible").toBool());
+        QTRY_VERIFY(!notebook->property("visible").toBool());
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 
@@ -2064,6 +2069,17 @@ private slots:
             QTRY_VERIFY(column->x() >= side);
         else
             QTRY_VERIFY(column->x() >= columnX);
+        // The notebook opens at the other side, the text between the two,
+        // and the keys go to it; closing it gives them back to the contents.
+        auto *notebook = window->findChild<QObject *>("notebook");
+        QTest::keyClick(window, Qt::Key_N, Qt::ControlModifier);
+        QTRY_VERIFY(notebook->property("opened").toBool());
+        QVERIFY(backend.notebookShown());
+        QCOMPARE(column->width(), columnWidth);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!notebook->property("visible").toBool());
+        QVERIFY(!backend.notebookShown());
+        QVERIFY(contents->property("visible").toBool());
         // Escape closes it, gives the page its keys back, and is remembered.
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!contents->property("visible").toBool());

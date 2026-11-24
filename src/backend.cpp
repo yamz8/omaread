@@ -115,6 +115,7 @@ void Backend::readState() {
         m_columnWidth = value;
     m_justify = state.value("justify").toBool();
     m_sidebar = state.value("sidebar").toBool();
+    m_notebookShown = state.value("notebook").toBool();
     m_trimMargins = state.value("trimMargins").toBool();
     const QJsonObject days = state.value("readingDays").toObject();
     for (auto it = days.begin(); it != days.end(); ++it)
@@ -200,7 +201,7 @@ void Backend::save() {
     const QJsonObject state{
         {"textScale", m_textScale}, {"tintPages", m_tintPages}, {"spread", m_spread}, {"transition", m_transition},
         {"typeface", m_typeface},   {"lineSpacing", m_lineSpacing}, {"columnWidth", m_columnWidth},
-        {"justify", m_justify}, {"sidebar", m_sidebar},     {"wordsPerMinute", m_wordsPerMinute},
+        {"justify", m_justify}, {"sidebar", m_sidebar}, {"notebook", m_notebookShown},     {"wordsPerMinute", m_wordsPerMinute},
         {"progressShows", m_progressShows}, {"folders", QJsonArray::fromStringList(m_folders)},
         {"trimMargins", m_trimMargins}, {"libraryView", m_libraryView}, {"readingDays", [&] {
              QJsonObject days;
@@ -526,6 +527,14 @@ void Backend::setSidebar(bool sidebar) {
     if (sidebar == m_sidebar)
         return;
     m_sidebar = sidebar;
+    emit settingsChanged();
+    scheduleSave();
+}
+
+void Backend::setNotebookShown(bool shown) {
+    if (shown == m_notebookShown)
+        return;
+    m_notebookShown = shown;
     emit settingsChanged();
     scheduleSave();
 }

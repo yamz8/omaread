@@ -20,11 +20,11 @@ The footer names the part and chapter, "Part II · V", and tells the time left i
 
 ## Finding your way
 
-`T` opens the contents in a sidebar beside the page, with each chapter's page; `Tab` there switches to your notes: bookmarks, highlights and what you wrote on them, together in reading order. It stays open as you jump from one to the next, and the text moves over to make room without changing width, so page numbers stay put. `G` skims the whole book a page or a chapter at a time, showing each page's first lines, and goes to a page by its number. `/` searches the book for words that begin with what you type, listing each match in the words around it. After any jump, through the contents, a link, a bookmark or a search, `Backspace` goes back to where you were. `Tab` steps through the links and note numbers on the page, for the keyboard.
+As in Kindle's desktop app, `T` opens the contents in a pane at the window's left, with each chapter's page, and `Ctrl+N` opens the notebook at its right: your bookmarks, highlights and notes together in reading order, filtered by kind with `Tab`. Either or both stay open as you jump from one place to the next, and the text sits between them without changing width, so page numbers stay put. `G` skims the whole book a page or a chapter at a time, showing each page's first lines, and goes to a page by its number. `/` searches the book for words that begin with what you type, listing each match in the words around it. After any jump, through the contents, a link, a bookmark or a search, `Backspace` goes back to where you were. `Tab` steps through the links and note numbers on the page, for the keyboard.
 
 ## Highlights and notes
 
-Choose words with the mouse, or drag across a PDF's page, to highlight them in one of four colors, write a note on them, copy them, or look them up in a dictionary installed on the computer (`sdcv` or `dictd`). `B` bookmarks the page. The sidebar's Notes tab lists every bookmark, highlight and note in reading order, and `C` there copies them all as Markdown; `omaread highlights book.epub` prints them, bookmarks included.
+Choose words with the mouse, or drag across a PDF's page, to highlight them in one of four colors, write a note on them, copy them, or look them up in a dictionary installed on the computer (`sdcv` or `dictd`). `B` bookmarks the page. The notebook (`Ctrl+N`) lists every bookmark, highlight and note in reading order, and `C` there copies them all as Markdown; `omaread highlights book.epub` prints them, bookmarks included.
 
 ## The library
 
@@ -66,7 +66,8 @@ omaread skill install               # teach coding agents to use these commands
 
 | Finding your way | |
 | --- | --- |
-| `T` | Contents, and notes in a sidebar (`Tab` switches) |
+| `T` | Contents, in a pane at the left |
+| `Ctrl+N` | Notebook: bookmarks, highlights and notes, in a pane at the right (`Tab` filters) |
 | `G` | Skim the book, or go to a page |
 | `/` `Ctrl+F`, `N` `Shift+N` | Find in the book, and the next or previous match |
 | `Backspace` `Shift+Backspace` | Back to where a jump left, and on again |
