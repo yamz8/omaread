@@ -2413,52 +2413,32 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 spacing: 16
                 Repeater {
-                    // Each tab's name, and how many it holds, shown quieter beside it.
-                    model: [{ name: qsTr("Contents"), count: 0 },
-                            { name: qsTr("Bookmarks"), count: backend.bookmarks.length },
-                            { name: qsTr("Notes"), count: backend.highlights.length }]
-                    delegate: Item {
-                        id: tabItem
+                    model: [qsTr("Contents"), qsTr("Bookmarks"), qsTr("Notes")]
+                    delegate: Label {
+                        id: tabLabel
                         required property int index
-                        required property var modelData
+                        required property string modelData
                         readonly property bool chosen: index === contents.tab
-                        implicitWidth: tabRow.implicitWidth
-                        implicitHeight: tabRow.implicitHeight
+                        text: modelData
+                        font.bold: true
+                        color: chosen ? theme.foreground : win.muted
                         Accessible.role: Accessible.PageTab
-                        Accessible.name: modelData.count > 0 ? modelData.name + ", " + win.number(modelData.count) : modelData.name
+                        Accessible.name: modelData
                         Accessible.selected: chosen
                         Accessible.onPressAction: contents.tab = index
-                        RowLayout {
-                            id: tabRow
-                            spacing: 5
-                            Label {
-                                Layout.alignment: Qt.AlignBaseline
-                                text: tabItem.modelData.name
-                                font.bold: true
-                                color: tabItem.chosen ? theme.foreground : win.muted
-                            }
-                            Label {
-                                Layout.alignment: Qt.AlignBaseline
-                                visible: tabItem.modelData.count > 0
-                                text: win.number(tabItem.modelData.count)
-                                font.pixelSize: Math.round(win.uiSize * 6 / 7)
-                                font.features: { "tnum": 1 }
-                                color: tabItem.chosen ? theme.accent : win.muted
-                            }
-                        }
                         // The chosen tab, underlined in the accent.
                         Rectangle {
-                            visible: tabItem.chosen
-                            anchors.top: tabRow.bottom
+                            visible: tabLabel.chosen
+                            anchors.top: parent.bottom
                             anchors.topMargin: 4
-                            width: tabRow.width
+                            width: parent.width
                             height: 2
                             color: theme.accent
                         }
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: contents.tab = tabItem.index
+                            onClicked: contents.tab = tabLabel.index
                         }
                     }
                 }
