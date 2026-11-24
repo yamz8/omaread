@@ -106,6 +106,9 @@ class Backend : public QObject {
     // The open book's highlights, in reading order, each {section, start, end,
     // text, note, color, chapter}.
     Q_PROPERTY(QVariantList highlights READ highlights NOTIFY highlightsChanged)
+    // The bookmarks and highlights together, in reading order, each with its
+    // kind ("bookmark" or "highlight") and its index in its own list.
+    Q_PROPERTY(QVariantList notebook READ notebook NOTIFY notebookChanged)
     // Time spent reading, today and these last seven days, in minutes, and
     // the books finished this year: {today, week, finishedThisYear}.
     Q_PROPERTY(QVariantMap readingStats READ readingStats NOTIFY statsChanged)
@@ -215,6 +218,7 @@ public:
     Q_INVOKABLE QVariantList panelsOf(int page);
     void setRightToLeft(bool rightToLeft);
     QVariantList highlights() const;
+    QVariantList notebook() const;
     bool canGoBack() const { return !m_back.isEmpty(); }
     bool canGoForward() const { return !m_forward.isEmpty(); }
     int minutesLeftInChapter() const;
@@ -373,6 +377,7 @@ signals:
     void historyChanged();
     void bookmarksChanged();
     void highlightsChanged();
+    void notebookChanged();
     void panelsChanged();
     void lookedUp(const QString &word, const QString &definition);
     // The book open was just read to its end.
@@ -394,11 +399,7 @@ private:
         // How much of the book's text has been read, as the open book counts
         // it; -1 for an entry saved before it was kept.
         double progress = -1;
-        struct Bookmark {
-            int section = 0;
-            double position = 0;
-            QString text;
-        };
+        using Bookmark = ::Bookmark;
         QList<Bookmark> bookmarks;
         QList<Highlight> highlights;
         bool finished = false;

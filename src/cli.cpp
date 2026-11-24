@@ -180,6 +180,7 @@ int highlights(const QStringList &arguments) {
     if (!book)
         return 1;
     QList<Highlight> marks;
+    QList<Bookmark> bookmarks;
     QFile state(Backend::stateFile());
     if (state.open(QIODevice::ReadOnly)) {
         const QJsonArray books = QJsonDocument::fromJson(state.readAll()).object().value("books").toArray();
@@ -192,6 +193,10 @@ int highlights(const QStringList &arguments) {
                 marks << Highlight{m.value("section").toInt(), m.value("start").toInt(), m.value("end").toInt(),
                                    m.value("text").toString(), m.value("note").toString(), m.value("color").toString(), {}};
             }
+            for (const QJsonValue &mark : entry.value("bookmarks").toArray()) {
+                const QJsonObject m = mark.toObject();
+                bookmarks << Bookmark{m.value("section").toInt(), m.value("position").toDouble(), m.value("text").toString()};
+            }
         }
     }
     if (command.isJson()) {
@@ -200,14 +205,17 @@ int highlights(const QStringList &arguments) {
             list.append(QJsonObject{{"section", h.section + 1}, {"chapter", book->chapterLabel(h.section)},
                                     {"text", h.text},           {"note", h.note},
                                     {"color", h.color}});
-        print(QJsonObject{{"title", book->title}, {"author", book->author}, {"highlights", list}});
+        QJsonArray marked;
+        for (const Bookmark &b : std::as_const(bookmarks))
+            marked.append(QJsonObject{{"section", b.section + 1}, {"chapter", book->chapterLabel(b.section)}, {"text", b.text}});
+        print(QJsonObject{{"title", book->title}, {"author", book->author}, {"highlights", list}, {"bookmarks", marked}});
         return 0;
     }
-    if (marks.isEmpty()) {
-        print(stdout, "No highlights in " + book->title + " yet.");
+    if (marks.isEmpty() && bookmarks.isEmpty()) {
+        print(stdout, "No highlights or bookmarks in " + book->title + " yet.");
         return 0;
     }
-    fputs(book->notesMarkdown(marks).toUtf8().constData(), stdout);
+    fputs(book->notesMarkdown(marks, bookmarks).toUtf8().constData(), stdout);
     return 0;
 }
 

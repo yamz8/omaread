@@ -23,6 +23,7 @@
 #include <archive_entry.h>
 
 #include <algorithm>
+#include <tuple>
 #include <cctype>
 #include <functional>
 #include <numeric>
@@ -336,18 +337,52 @@ QString Book::chapterLabel(int section) const {
     return chain.join(QStringLiteral("  ·  "));
 }
 
-QString Book::notesMarkdown(const QList<Highlight> &highlights) const {
+double Book::placeOf(const Highlight &highlight) const {
+    return paged() ? highlight.area.y() : highlight.start;
+}
+
+double Book::placeOf(const Bookmark &bookmark) const {
+    // A page's top, ahead of anything marked on it; in a flowing book, about
+    // as far into the section's words as the page is down it.
+    return paged() ? -1 : bookmark.position * plainText(bookmark.section).size();
+}
+
+QString Book::notesMarkdown(const QList<Highlight> &highlights, const QList<Bookmark> &bookmarks) const {
     QString out = "# " + title + '\n';
     if (!author.isEmpty())
         out += '\n' + author + '\n';
+    // Highlights and bookmarks together, in reading order.
+    struct Mark {
+        int section;
+        double place;
+        const Highlight *highlight;
+        const Bookmark *bookmark;
+    };
+    QList<Mark> marks;
+    for (const Highlight &h : highlights)
+        marks << Mark{h.section, placeOf(h), &h, nullptr};
+    for (const Bookmark &b : bookmarks)
+        marks << Mark{b.section, placeOf(b), nullptr, &b};
+    // A bookmark marks where a page starts, so it goes ahead of what's at the same place.
+    std::stable_sort(marks.begin(), marks.end(), [](const Mark &x, const Mark &y) {
+        return std::tuple(x.section, x.place, !x.bookmark) < std::tuple(y.section, y.place, !y.bookmark);
+    });
     QString chapter = QStringLiteral("\x01");
-    for (const Highlight &highlight : highlights) {
-        const QString label = chapterLabel(highlight.section).replace(QStringLiteral("  ·  "), QStringLiteral(" · "));
+    for (const Mark &mark : std::as_const(marks)) {
+        const QString label = chapterLabel(mark.section).replace(QStringLiteral("  ·  "), QStringLiteral(" · "));
         if (label != chapter) {
             chapter = label;
             if (!label.isEmpty())
                 out += "\n## " + label + '\n';
         }
+        if (mark.bookmark) {
+            QString words = mark.bookmark->text.simplified();
+            if (words.size() > 100)
+                words = words.left(100).trimmed() + QStringLiteral("…");
+            out += "\n*Bookmark*" + (words.isEmpty() ? QString() : ": " + words) + '\n';
+            continue;
+        }
+        const Highlight &highlight = *mark.highlight;
         // A quotation, line by line, and the note under it.
         QString quote;
         for (const QString &line : highlight.text.split(QRegularExpression("[\\n\\x{2029}\\x{2028}]+"), Qt::SkipEmptyParts))

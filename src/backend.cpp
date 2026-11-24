@@ -64,6 +64,10 @@ Backend::Backend(const QString &stateDirectory, FilePicker *picker, QObject *par
     // Books put in ~/Books join the library by themselves; tests choose their own.
     if (stateDirectory.isEmpty())
         m_folders = {QDir::homePath() + "/Books"};
+    // The notebook lists both, and follows either.
+    connect(this, &Backend::bookmarksChanged, this, &Backend::notebookChanged);
+    connect(this, &Backend::highlightsChanged, this, &Backend::notebookChanged);
+    connect(this, &Backend::bookChanged, this, &Backend::notebookChanged);
     m_scanTimer.setSingleShot(true);
     m_scanTimer.setInterval(400);
     connect(&m_scanTimer, &QTimer::timeout, this, &Backend::scanFolders);
@@ -1041,6 +1045,40 @@ QVariantList Backend::highlights() const {
     return list;
 }
 
+QVariantList Backend::notebook() const {
+    QVariantList list;
+    if (!m_book || m_library.isEmpty() || m_library.first().path != m_book->path)
+        return list;
+    const Entry &entry = m_library.first();
+    struct Mark {
+        int section;
+        double place;
+        QVariantMap row;
+    };
+    QList<Mark> marks;
+    for (int i = 0; i < entry.highlights.size(); ++i) {
+        const Highlight &h = entry.highlights[i];
+        marks << Mark{h.section, m_book->placeOf(h),
+                      {{"kind", "highlight"}, {"index", i}, {"section", h.section}, {"text", h.text},
+                       {"note", h.note}, {"color", h.color}, {"chapter", chapterLabelFor(h.section)}}};
+    }
+    for (int i = 0; i < entry.bookmarks.size(); ++i) {
+        const Bookmark &b = entry.bookmarks[i];
+        marks << Mark{b.section, m_book->placeOf(b),
+                      {{"kind", "bookmark"}, {"index", i}, {"section", b.section}, {"text", b.text},
+                       {"note", QString()}, {"color", QString()},
+                       {"chapter", m_book->paged() ? tr("Page %1").arg(b.section + 1) : chapterLabelFor(b.section)}}};
+    }
+    // A bookmark marks where a page starts, so it goes ahead of what's at the same place.
+    std::stable_sort(marks.begin(), marks.end(), [](const Mark &x, const Mark &y) {
+        const bool a = x.row.value("kind") == "bookmark", b = y.row.value("kind") == "bookmark";
+        return std::tuple(x.section, x.place, !a) < std::tuple(y.section, y.place, !b);
+    });
+    for (const Mark &mark : std::as_const(marks))
+        list << mark.row;
+    return list;
+}
+
 int Backend::addHighlight(int start, int end, const QString &text, const QString &color) {
     Entry *entry = openEntry();
     if (!entry || end <= start || !highlightColors().contains(color))
@@ -1206,7 +1244,7 @@ void Backend::copyNotes() {
     const Entry *entry = openEntry();
     if (!entry || !m_book)
         return;
-    copyText(m_book->notesMarkdown(entry->highlights));
+    copyText(m_book->notesMarkdown(entry->highlights, entry->bookmarks));
 }
 
 bool Backend::canLookUp() const {

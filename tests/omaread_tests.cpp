@@ -975,6 +975,20 @@ private slots:
         QVERIFY(markdown.startsWith("# Marked\n"));
         QVERIFY(markdown.contains("## One\n\n> The keeper climbed\n\nWho keeps the light.\n"));
         QVERIFY(markdown.contains("## Two\n\n> Morning\n"));
+        // The notes list bookmarks with the highlights, in reading order: a
+        // bookmark at the top of the second chapter comes after the first's
+        // highlight and before the second's.
+        again.goTo(1);
+        QVERIFY(again.toggleBookmark(0, 0.01, "Morning came grey."));
+        const QVariantList notebook = again.notebook();
+        QCOMPARE(notebook.size(), 3);
+        QCOMPARE(notebook[0].toMap().value("kind").toString(), QString("highlight"));
+        QCOMPARE(notebook[1].toMap().value("kind").toString(), QString("bookmark"));
+        QCOMPARE(notebook[1].toMap().value("index").toInt(), 0);
+        QCOMPARE(notebook[2].toMap().value("text").toString(), QString("Morning"));
+        again.copyNotes();
+        QVERIFY(QGuiApplication::clipboard()->text().contains("## Two\n\n*Bookmark*: Morning came grey.\n\n> Morning\n"));
+        again.goTo(0);
         // Going to one leaves a place to come back to.
         again.goToHighlight(0);
         QCOMPARE(again.section(), 0);
@@ -1596,8 +1610,8 @@ private slots:
         QCOMPARE(backend.section(), 0);
         QVERIFY(backend.goBack());
         QCOMPARE(backend.section(), 1);
-        // B marks the page, its corner shows it, and the contents' second tab
-        // lists it: Enter goes there.
+        // B marks the page, its corner shows it, and the notes, the
+        // contents' second tab, list it: Enter goes there.
         QTest::keyClick(window, Qt::Key_B);
         QCOMPARE(backend.bookmarks().size(), 1);
         QTRY_VERIFY(window->property("bookmarkHere").toBool());
@@ -1722,8 +1736,7 @@ private slots:
         QObject *contents = window->findChild<QObject *>("contents");
         QTRY_VERIFY(contents->property("visible").toBool());
         QTest::keyClick(window, Qt::Key_Tab);
-        QTest::keyClick(window, Qt::Key_Tab);
-        QCOMPARE(contents->property("tab").toInt(), 2);
+        QCOMPARE(contents->property("tab").toInt(), 1);
         QTest::keyClick(window, Qt::Key_Return);
         QCOMPARE(backend.target(), 8);
         QTest::keyClick(window, Qt::Key_Escape);
@@ -2051,6 +2064,21 @@ private slots:
             QTRY_VERIFY(column->x() >= side);
         else
             QTRY_VERIFY(column->x() >= columnX);
+        // The mouse finds the same sidebar: moving it over the page shows a
+        // button for it, which closes it again.
+        auto *buttons = item(window->contentItem(), "pageButtons");
+        QVERIFY(buttons);
+        QVERIFY(!buttons->isVisible());
+        QTest::mouseMove(window, QPoint(window->width() / 2, window->height() / 2));
+        QTest::mouseMove(window, QPoint(window->width() / 2 + 10, window->height() / 2 + 10));
+        QTRY_VERIFY(buttons->isVisible());
+        QTRY_COMPARE(buttons->opacity(), 1.0);
+        const QPointF first = buttons->mapToScene(QPointF(17, 17));
+        QTest::mouseClick(window, Qt::LeftButton, {}, first.toPoint());
+        QTRY_VERIFY(!contents->property("visible").toBool());
+        QVERIFY(!backend.sidebar());
+        QTest::mouseClick(window, Qt::LeftButton, {}, first.toPoint());
+        QTRY_VERIFY(contents->property("opened").toBool());
         // Escape closes it, gives the page its keys back, and is remembered.
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!contents->property("visible").toBool());

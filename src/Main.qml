@@ -58,6 +58,13 @@ ApplicationWindow {
                                  || lookup.visible
                                  || findField.activeFocus || shelfSearch.activeFocus
     readonly property bool reading: backend.open && !busy && settled
+    // The page's buttons, while the mouse moves over it.
+    property bool pageButtonsShown: false
+    function showPageButtons() {
+        pageButtonsShown = true
+        pageButtonsTimer.restart()
+    }
+    Timer { id: pageButtonsTimer; interval: 2200; onTriggered: win.pageButtonsShown = false }
     // How much of the window's side the contents sidebar takes, eased as it slides.
     property real sideInset: contents.visible ? contents.width : 0
     Behavior on sideInset { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
@@ -1451,6 +1458,83 @@ ApplicationWindow {
                             color: theme.background
                         }
 
+                        // The mouse's way to the contents and the reading settings:
+                        // shown while the pointer moves over the page, gone a moment
+                        // after it rests, and never by the keyboard.
+                        HoverHandler {
+                            id: pagePointer
+                            onPointChanged: win.showPageButtons()
+                        }
+                        Row {
+                            id: pageButtons
+                            objectName: "pageButtons"
+                            anchors.top: parent.top
+                            anchors.topMargin: 10
+                            anchors.right: parent.right
+                            anchors.rightMargin: 52
+                            spacing: 4
+                            opacity: (win.pageButtonsShown || buttonsHover.hovered) && !win.panelView ? 1 : 0
+                            visible: opacity > 0
+                            Behavior on opacity { NumberAnimation { duration: 220 } }
+                            HoverHandler { id: buttonsHover }
+
+                            Repeater {
+                                model: [{ key: "contents", tip: qsTr("Contents and notes  (T)") },
+                                        { key: "settings", tip: qsTr("Reading settings  (S)") }]
+                                delegate: Rectangle {
+                                    id: pageButton
+                                    required property var modelData
+                                    visible: modelData.key !== "settings" || !backend.paged
+                                    width: 34
+                                    height: 34
+                                    radius: Math.min(4, theme.radius)
+                                    color: buttonArea.containsMouse ? theme.colors.selection
+                                         : Qt.rgba(theme.background.r, theme.background.g, theme.background.b, 0.85)
+                                    Accessible.role: Accessible.Button
+                                    Accessible.name: modelData.tip
+                                    Accessible.onPressAction: buttonArea.clicked(null)
+                                    ToolTip.visible: buttonArea.containsMouse
+                                    ToolTip.delay: 500
+                                    ToolTip.text: modelData.tip
+                                    // Contents: lines of a list, the inner ones indented.
+                                    Column {
+                                        visible: pageButton.modelData.key === "contents"
+                                        anchors.centerIn: parent
+                                        spacing: 3
+                                        Repeater {
+                                            model: [14, 10, 10, 14]
+                                            delegate: Rectangle {
+                                                required property int modelData
+                                                required property int index
+                                                x: modelData < 14 ? 4 : 0
+                                                width: modelData
+                                                height: 2
+                                                radius: 1
+                                                color: contents.visible && index === 0 ? theme.accent : theme.foreground
+                                            }
+                                        }
+                                    }
+                                    Label {
+                                        visible: pageButton.modelData.key === "settings"
+                                        anchors.centerIn: parent
+                                        text: "Aa"
+                                        font.family: "Noto Serif"
+                                        font.bold: true
+                                        color: settings.visible ? theme.accent : theme.foreground
+                                    }
+                                    MouseArea {
+                                        id: buttonArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: pageButton.modelData.key === "contents"
+                                                   ? contents.toggle()
+                                                   : (settings.visible ? settings.close() : settings.open())
+                                    }
+                                }
+                            }
+                        }
+
                         // A ribbon on a bookmarked page, as on a book's corner.
                         Canvas {
                             objectName: "bookmarkRibbon"
@@ -1684,7 +1768,9 @@ ApplicationWindow {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
-                    anchors.leftMargin: 16
+                    // Beside the contents sidebar, which runs the window's full
+                    // height; mirroring puts both on the right together.
+                    anchors.leftMargin: 16 + win.sideInset
                     anchors.rightMargin: 16
                     height: Math.round(win.uiSize * 2.3)
                     spacing: 16
@@ -2308,15 +2394,17 @@ ApplicationWindow {
         }
     }
 
-    // The contents, bookmarks and notes, a tab each, in a sidebar beside the
-    // page: Up and Down to choose, Enter to go there and stay, Tab to switch,
-    // Delete to remove, T or Escape to close and give the keys back to the page.
+    // The contents, and the notes (bookmarks, highlights and what's written on
+    // them, in reading order), a tab each, in a sidebar the window's full
+    // height beside the page: Up and Down to choose, Enter to go there and
+    // stay, Tab to switch, Delete to remove, T or Escape to close and give the
+    // keys back to the page.
     Popup {
         id: contents
         objectName: "contents"
-        // Which list: 0 the contents, 1 the bookmarks, 2 the highlights and notes.
+        // Which list: 0 the contents, 1 the notes.
         property int tab: 0
-        function nextTab() { tab = (tab + 1) % 3 }
+        function nextTab() { tab = (tab + 1) % 2 }
         // T and Escape remember the choice; leaving a book closes it without.
         function toggle() {
             backend.sidebar = !visible
@@ -2325,7 +2413,7 @@ ApplicationWindow {
         x: win.rightToLeft ? win.width - width : 0
         y: 0
         width: Math.min(Math.round(win.uiSize * 23), win.width - 48)
-        height: win.height - Math.round(win.uiSize * 2.3)
+        height: win.height
         modal: false
         dim: false
         focus: true
@@ -2358,9 +2446,6 @@ ApplicationWindow {
 
         function focusList() {
             if (tab === 1) {
-                markList.currentIndex = 0
-                markList.forceActiveFocus()
-            } else if (tab === 2) {
                 noteList.currentIndex = 0
                 noteList.forceActiveFocus()
             } else {
@@ -2374,9 +2459,27 @@ ApplicationWindow {
             win.hintBack()
             Qt.callLater(win.restore)
         }
-        function chooseNote(index) {
-            backend.goToHighlight(index)
+        // A row of the notes: a bookmark or a highlight.
+        function chooseNote(row) {
+            const mark = backend.notebook[row]
+            if (!mark)
+                return
+            if (mark.kind === "bookmark") {
+                backend.goToBookmark(mark.index)
+                Qt.callLater(win.restore)
+            } else {
+                backend.goToHighlight(mark.index)
+            }
             win.hintBack()
+        }
+        function removeNote(row) {
+            const mark = backend.notebook[row]
+            if (!mark)
+                return
+            if (mark.kind === "bookmark")
+                backend.removeBookmark(mark.index)
+            else
+                backend.removeHighlight(mark.index)
         }
         function chooseMark(index) {
             backend.goToBookmark(index)
@@ -2414,7 +2517,7 @@ ApplicationWindow {
                 Layout.bottomMargin: 8
                 spacing: 16
                 Repeater {
-                    model: [qsTr("Contents"), qsTr("Bookmarks"), qsTr("Notes")]
+                    model: [qsTr("Contents"), qsTr("Notes")]
                     delegate: Label {
                         id: tabLabel
                         required property int index
@@ -2448,13 +2551,6 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 visible: contents.tab === 0 && chapters.count === 0
                 text: qsTr("This book has no table of contents. Use [ and ] to move between sections.")
-                color: win.muted
-                wrapMode: Text.Wrap
-            }
-            Label {
-                Layout.fillWidth: true
-                visible: contents.tab === 1 && markList.count === 0
-                text: qsTr("No bookmarks yet. B marks the page you're on.")
                 color: win.muted
                 wrapMode: Text.Wrap
             }
@@ -2518,64 +2614,10 @@ ApplicationWindow {
                     }
                 }
             }
-            ListView {
-                id: markList
-                objectName: "bookmarks"
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                visible: contents.tab === 1 && count > 0
-                clip: true
-                model: backend.bookmarks
-                highlightMoveDuration: 0
-                ScrollBar.vertical: ScrollBar {}
-                Keys.onReturnPressed: if (currentIndex >= 0) contents.chooseMark(currentIndex)
-                Keys.onEnterPressed: if (currentIndex >= 0) contents.chooseMark(currentIndex)
-                Keys.onDeletePressed: if (currentIndex >= 0) backend.removeBookmark(currentIndex)
-                Keys.onTabPressed: contents.nextTab()
-
-                delegate: Rectangle {
-                    id: mark
-                    required property int index
-                    required property var modelData
-                    width: ListView.view.width
-                    height: Math.round(win.uiSize * 3.8)
-                    radius: Math.min(4, theme.radius)
-                    color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
-                    Accessible.role: Accessible.ListItem
-                    Accessible.name: (mark.modelData.chapter ? mark.modelData.chapter + ": " : "") + mark.modelData.text
-                    Accessible.onPressAction: contents.chooseMark(mark.index)
-
-                    ColumnLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 12
-                        anchors.rightMargin: 12
-                        spacing: 0
-                        Label {
-                            Layout.fillWidth: true
-                            horizontalAlignment: Text.AlignLeft
-                            text: backend.paged ? qsTr("Page %1").arg(win.number(mark.modelData.section + 1))
-                                                : mark.modelData.chapter
-                            color: win.muted
-                            font.pixelSize: Math.round(win.uiSize * 6 / 7)
-                            elide: Text.ElideRight
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            horizontalAlignment: Text.AlignLeft
-                            text: mark.modelData.text
-                            elide: Text.ElideRight
-                        }
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: contents.chooseMark(mark.index)
-                    }
-                }
-            }
             Label {
                 Layout.fillWidth: true
-                visible: contents.tab === 2 && noteList.count === 0
-                text: qsTr("No highlights yet. Select words with the mouse to highlight them or write a note.")
+                visible: contents.tab === 1 && noteList.count === 0
+                text: qsTr("No bookmarks or highlights yet. B marks the page; select words with the mouse to highlight them or write a note.")
                 color: win.muted
                 wrapMode: Text.Wrap
             }
@@ -2584,15 +2626,15 @@ ApplicationWindow {
                 objectName: "notebook"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                visible: contents.tab === 2 && count > 0
+                visible: contents.tab === 1 && count > 0
                 clip: true
                 spacing: 4
-                model: backend.highlights
+                model: backend.notebook
                 highlightMoveDuration: 0
                 ScrollBar.vertical: ScrollBar {}
                 Keys.onReturnPressed: if (currentIndex >= 0) contents.chooseNote(currentIndex)
                 Keys.onEnterPressed: if (currentIndex >= 0) contents.chooseNote(currentIndex)
-                Keys.onDeletePressed: if (currentIndex >= 0) backend.removeHighlight(currentIndex)
+                Keys.onDeletePressed: if (currentIndex >= 0) contents.removeNote(currentIndex)
                 Keys.onTabPressed: contents.nextTab()
                 Keys.onPressed: event => {
                     if (event.key === Qt.Key_C && !(event.modifiers & Qt.ControlModifier)) {
@@ -2606,16 +2648,19 @@ ApplicationWindow {
                     id: noteRow
                     required property int index
                     required property var modelData
+                    readonly property bool bookmark: modelData.kind === "bookmark"
                     width: ListView.view.width
                     height: highlightColumn.implicitHeight + 16
                     radius: Math.min(4, theme.radius)
                     color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
                     Accessible.role: Accessible.ListItem
-                    Accessible.name: noteRow.modelData.text + (noteRow.modelData.note ? ". " + qsTr("Note: %1").arg(noteRow.modelData.note) : "")
+                    Accessible.name: (noteRow.bookmark ? qsTr("Bookmark: %1").arg(noteRow.modelData.text) : noteRow.modelData.text)
+                                     + (noteRow.modelData.note ? ". " + qsTr("Note: %1").arg(noteRow.modelData.note) : "")
                     Accessible.onPressAction: contents.chooseNote(noteRow.index)
 
-                    // The highlight's color, down its side.
+                    // A highlight's color down its side; a bookmark's ribbon.
                     Rectangle {
+                        visible: !noteRow.bookmark
                         anchors.left: parent.left
                         anchors.leftMargin: 8
                         anchors.top: parent.top
@@ -2623,6 +2668,28 @@ ApplicationWindow {
                         anchors.margins: 8
                         width: 3
                         color: win.highlightInk(noteRow.modelData.color)
+                    }
+                    Canvas {
+                        visible: noteRow.bookmark
+                        anchors.left: parent.left
+                        anchors.leftMargin: 6
+                        anchors.top: parent.top
+                        anchors.topMargin: 9
+                        width: 8
+                        height: 13
+                        onPaint: {
+                            const g = getContext("2d")
+                            g.reset()
+                            g.fillStyle = theme.accent
+                            g.beginPath()
+                            g.moveTo(0, 0)
+                            g.lineTo(width, 0)
+                            g.lineTo(width, height)
+                            g.lineTo(width / 2, height - 3)
+                            g.lineTo(0, height)
+                            g.closePath()
+                            g.fill()
+                        }
                     }
                     ColumnLayout {
                         id: highlightColumn
@@ -2646,8 +2713,10 @@ ApplicationWindow {
                             horizontalAlignment: Text.AlignLeft
                             text: noteRow.modelData.text
                             font.family: prose.font.family
+                            // A bookmark's page begins with these words; a highlight is them.
+                            color: noteRow.bookmark ? win.muted : theme.foreground
                             wrapMode: Text.Wrap
-                            maximumLineCount: 3
+                            maximumLineCount: noteRow.bookmark ? 2 : 3
                             elide: Text.ElideRight
                         }
                         Label {
@@ -2671,7 +2740,7 @@ ApplicationWindow {
             // Holds a message for an empty tab at the top.
             Item {
                 Layout.fillHeight: true
-                visible: !chapters.visible && !markList.visible && !noteList.visible
+                visible: !chapters.visible && !noteList.visible
             }
         }
     }

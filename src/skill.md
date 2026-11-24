@@ -25,8 +25,10 @@ none changes the file.
 - `omaread search <file> <words> --json`: every section the words appear in,
   ignoring case, and how often. A match is a word that begins with the words.
 - `omaread highlights <file>`: the passages the person highlighted in the
-  book and the notes they wrote, as Markdown under each chapter's name; with
-  `--json`, each one's section, chapter, text, note and color.
+  book, the notes they wrote and the pages they bookmarked, in reading order,
+  as Markdown under each chapter's name; with `--json`, each highlight's
+  section, chapter, text, note and color, and each bookmark's section, chapter
+  and first words.
 - `omaread open <file>`: opens the book in the window, for the person to read.
 
 A locked PDF needs `--password`. Ask the person for it; never guess or try

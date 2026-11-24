@@ -51,6 +51,13 @@ struct Highlight {
     QRectF area;
 };
 
+// A marked page: its section, how far down it the page starts, and its first words.
+struct Bookmark {
+    int section = 0;
+    double position = 0;
+    QString text;
+};
+
 // A link on a PDF page: the area, as fractions of the page, and where it goes,
 // another page or a web address.
 struct PageLink {
@@ -106,7 +113,11 @@ public:
     void preparePlainText() const;
     // Highlights and their notes as Markdown, under the book's title and
     // each chapter's name, to keep or share.
-    QString notesMarkdown(const QList<Highlight> &highlights) const;
+    QString notesMarkdown(const QList<Highlight> &highlights, const QList<Bookmark> &bookmarks = {}) const;
+    // Where in its section a highlight or a bookmark lies, comparable between
+    // the two: a character for a flowing book's words, a height on a page.
+    double placeOf(const Highlight &highlight) const;
+    double placeOf(const Bookmark &bookmark) const;
 
     // A comic page's panels, as fractions of the page, in reading order: rows
     // from the top, and in a row from the left, or from the right when the
