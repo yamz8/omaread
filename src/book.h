@@ -46,6 +46,9 @@ struct Highlight {
     QString text;
     QString note;
     QString color = "yellow";
+    // On a PDF's or comic's page, the area marked, as fractions of the page;
+    // empty for a flowing book's words.
+    QRectF area;
 };
 
 // A link on a PDF page: the area, as fractions of the page, and where it goes,

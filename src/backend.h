@@ -268,6 +268,12 @@ public:
     Q_INVOKABLE int addHighlight(int start, int end, const QString &text, const QString &color);
     // The highlight in this section at a character position, or -1.
     Q_INVOKABLE int highlightAt(int position) const;
+    // On a PDF page: the area dragged across, as fractions of the page, and
+    // the highlight under a point of it, or -1.
+    Q_INVOKABLE int addPageHighlight(int page, double x, double y, double width, double height, const QString &color);
+    Q_INVOKABLE int pageHighlightAt(int page, double x, double y) const;
+    // The words in an area of a page, for a note or a look-up.
+    Q_INVOKABLE QString pageText(int page, double x, double y, double width, double height) const;
     Q_INVOKABLE void setHighlightColor(int index, const QString &color);
     Q_INVOKABLE void setHighlightNote(int index, const QString &note);
     Q_INVOKABLE void removeHighlight(int index);

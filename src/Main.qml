@@ -449,6 +449,10 @@ ApplicationWindow {
             return
         }
         restoring = true
+        // The pages at their size now, so the view is placed on them, not on
+        // the size they were at before a zoom.
+        if (backend.paged)
+            spreadRow.forceLayout()
         view.contentY = backend.position * Math.max(0, view.contentHeight - view.height)
         // Zoomed in on a page, the reader's place across it stays.
         view.contentX = backend.paged && zoom > 1 ? Math.max(0, Math.min(view.contentX, view.contentWidth - view.width))
@@ -547,11 +551,16 @@ ApplicationWindow {
         }
         return paint
     }
+    // On a PDF's or comic's page, which is paper whatever the theme: the colors
+    // themselves, laid over the page.
+    readonly property var highlightInks: ({ yellow: highlightInk("yellow"), green: highlightInk("green"),
+                                            blue: highlightInk("blue"), pink: highlightInk("pink") })
     property string lastHighlightColor: "yellow"
     function paintHighlights() { backend.paintHighlights(prose.textDocument, highlightPaint) }
     // A selection made with the mouse, or a highlight clicked: the bar offers
     // what can be done with it.
     function showSelectionBar(existing) {
+        selectionBar.page = -1
         selectionBar.highlight = existing
         if (existing >= 0) {
             const h = backend.highlights[existing]
@@ -567,10 +576,35 @@ ApplicationWindow {
         selectionBar.anchorX = prose.mapToItem(Overlay.overlay, prose.width / 2, 0).x
         selectionBar.open()
     }
+    // On a PDF's page: an area dragged across, or a highlight clicked.
+    function showPageSelectionBar(sheet, area, existing) {
+        selectionBar.page = sheet.page
+        selectionBar.area = area
+        selectionBar.highlight = existing
+        const c = sheet.crop
+        const left = (area.x - c.x) / c.width * sheet.width, top = (area.y - c.y) / c.height * sheet.height
+        const at = sheet.mapToItem(Overlay.overlay, left + area.width / c.width * sheet.width / 2, top)
+        selectionBar.anchorX = at.x
+        selectionBar.anchorY = at.y
+        selectionBar.open()
+    }
+    function selectedText() {
+        if (selectionBar.highlight >= 0)
+            return backend.highlights[selectionBar.highlight].text
+        if (selectionBar.page >= 0) {
+            const a = selectionBar.area
+            return backend.pageText(selectionBar.page, a.x, a.y, a.width, a.height)
+        }
+        return prose.selectedText
+    }
     function highlightSelection(color) {
         lastHighlightColor = color
         if (selectionBar.highlight >= 0) {
             backend.setHighlightColor(selectionBar.highlight, color)
+        } else if (selectionBar.page >= 0) {
+            const a = selectionBar.area
+            selectionBar.highlight = backend.addPageHighlight(selectionBar.page, a.x, a.y, a.width, a.height, color)
+            clearSelections()
         } else if (prose.selectionEnd > prose.selectionStart) {
             selectionBar.highlight = backend.addHighlight(prose.selectionStart, prose.selectionEnd, prose.selectedText, color)
             prose.deselect()
@@ -578,7 +612,7 @@ ApplicationWindow {
         return selectionBar.highlight
     }
     function lookUpSelection() {
-        const word = selectionBar.highlight >= 0 ? backend.highlights[selectionBar.highlight].text : prose.selectedText
+        const word = selectedText()
         selectionBar.close()
         lookup.ask(word.trim().split(/\s+/).slice(0, 4).join(" "))
     }
@@ -711,10 +745,27 @@ ApplicationWindow {
     // Highlights the words chosen with the mouse, in the color used last.
     Shortcut {
         sequence: "H"
-        enabled: win.reading && !backend.paged && prose.selectedText.trim() !== ""
+        enabled: win.reading
         onActivated: {
-            win.highlightSelection(win.lastHighlightColor)
-            win.say(qsTr("Highlighted"))
+            if (backend.paged) {
+                // The page with an area dragged across it, if any.
+                for (let i = 0; i < sheets.count; ++i) {
+                    const sheet = sheets.itemAt(i)
+                    if (sheet && sheet.hasSelection) {
+                        selectionBar.page = sheet.page
+                        selectionBar.area = sheet.selected
+                        selectionBar.highlight = -1
+                        win.highlightSelection(win.lastHighlightColor)
+                        win.say(qsTr("Highlighted"))
+                        return
+                    }
+                }
+            } else if (prose.selectedText.trim() !== "") {
+                selectionBar.page = -1
+                selectionBar.highlight = -1
+                win.highlightSelection(win.lastHighlightColor)
+                win.say(qsTr("Highlighted"))
+            }
         }
     }
     Shortcut { sequence: "Tab"; enabled: win.reading && !backend.paged; onActivated: win.chooseLink(1) }
@@ -1206,6 +1257,12 @@ ApplicationWindow {
                                                    : Qt.rect(0, 0, 0, 0)
                                         width: Math.round(spreadRow.pageHeight * win.aspect(modelData))
                                         height: Math.round(spreadRow.pageHeight)
+                                        highlightColors: win.highlightInks
+                                        onSelectionMade: area => win.showPageSelectionBar(pageSheet, area, -1)
+                                        onHighlightClicked: index => {
+                                            const h = backend.highlights[index]
+                                            win.showPageSelectionBar(pageSheet, Qt.rect(h.x, h.y, h.width, h.height), index)
+                                        }
                                         onFollow: (target, url) => { if (target >= 0) { win.markJump(); win.jump(target, 0) } else Qt.openUrlExternally(url) }
                                         onSelectionStarted: {
                                             prose.deselect()
@@ -1644,6 +1701,9 @@ ApplicationWindow {
         property int highlight: -1
         property int start: 0
         property int end: 0
+        // On a PDF's page, which page and the area marked; -1 in a book's text.
+        property int page: -1
+        property rect area: Qt.rect(0, 0, 0, 0)
         property real anchorX: 0
         property real anchorY: 0
         x: Math.round(Math.max(8, Math.min(win.width - width - 8, anchorX - width / 2)))
@@ -1658,7 +1718,7 @@ ApplicationWindow {
             border.color: theme.colors.selection
             radius: theme.radius
         }
-        onClosed: if (!noteEditor.visible) prose.deselect()
+        onClosed: if (!noteEditor.visible && page < 0) prose.deselect()
 
         contentItem: RowLayout {
             spacing: 6
@@ -1701,7 +1761,7 @@ ApplicationWindow {
                 flat: true
                 Material.roundedScale: theme.radius
                 onClicked: {
-                    backend.copyText(selectionBar.highlight >= 0 ? backend.highlights[selectionBar.highlight].text : prose.selectedText)
+                    backend.copyText(win.selectedText())
                     win.say(qsTr("Copied"))
                     selectionBar.close()
                 }

@@ -1789,6 +1789,32 @@ private slots:
         QTRY_VERIFY(spread->width() > 0);
         const double after = (view->property("contentX").toDouble() + at.x() - spread->x()) / spread->width();
         QVERIFY2(qAbs(after - before) < 0.02, qPrintable(QString("%1 -> %2").arg(before).arg(after)));
+        // A drag across a page's words offers to highlight them; H does.
+        // Back to the whole page, at its top.
+        window->setProperty("zoom", 1.0);
+        backend.setPosition(0);
+        QMetaObject::invokeMethod(window, "restore");
+        auto *page = item(window->contentItem(), "pageImage");
+        QTRY_VERIFY(page && page->width() > 0);
+        const auto onPage = [&](double x, double y) { return page->mapToScene(QPointF(x * page->width(), y * page->height())).toPoint(); };
+        QTest::mousePress(window, Qt::LeftButton, {}, onPage(0.25, 0.1));
+        for (int i = 1; i <= 5; ++i)
+            QTest::mouseMove(window, onPage(0.25 + 0.1 * i, 0.1 + 0.06 * i));
+        QTest::mouseRelease(window, Qt::LeftButton, {}, onPage(0.75, 0.4));
+        QObject *bar = window->findChild<QObject *>("selectionBar");
+        QTRY_VERIFY(bar->property("visible").toBool());
+        QCOMPARE(bar->property("page").toInt(), 0);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!bar->property("visible").toBool());
+        QTest::keyClick(window, Qt::Key_H);
+        QCOMPARE(backend.highlights().size(), 1);
+        const QVariantMap mark = backend.highlights()[0].toMap();
+        QCOMPARE(mark.value("text").toString(), QString("1"));
+        QVERIFY(mark.value("width").toDouble() > 0.4);
+        // A click on it brings the bar back, for its color or a note.
+        QTest::mouseClick(window, Qt::LeftButton, {}, onPage(0.5, 0.25));
+        QTRY_VERIFY(bar->property("visible").toBool());
+        QCOMPARE(bar->property("highlight").toInt(), 0);
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 

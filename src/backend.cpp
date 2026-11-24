@@ -22,6 +22,7 @@
 #include <QtConcurrent>
 
 #include <algorithm>
+#include <tuple>
 #include <cmath>
 
 #include "layout.h"
@@ -133,10 +134,12 @@ void Backend::readState() {
         for (const QJsonValue &mark : book.value("highlights").toArray()) {
             const QJsonObject m = mark.toObject();
             Highlight h{m.value("section").toInt(), m.value("start").toInt(), m.value("end").toInt(),
-                        m.value("text").toString(), m.value("note").toString(), m.value("color").toString()};
+                        m.value("text").toString(), m.value("note").toString(), m.value("color").toString(), {}};
             if (!highlightColors().contains(h.color))
                 h.color = "yellow";
-            if (h.end > h.start)
+            if (const QJsonArray area = m.value("area").toArray(); area.size() == 4)
+                h.area = QRectF(area[0].toDouble(), area[1].toDouble(), area[2].toDouble(), area[3].toDouble());
+            if (h.end > h.start || !h.area.isEmpty())
                 entry.highlights << h;
         }
         for (const QJsonValue &mark : book.value("bookmarks").toArray()) {
@@ -164,9 +167,15 @@ void Backend::save() {
                                  {"highlights", [&] {
                                       QJsonArray marks;
                                       for (const Highlight &h : entry.highlights)
-                                          marks.append(QJsonObject{{"section", h.section}, {"start", h.start},
-                                                                   {"end", h.end},         {"text", h.text},
-                                                                   {"note", h.note},       {"color", h.color}});
+                                      {
+                                          QJsonObject mark{{"section", h.section}, {"start", h.start},
+                                                           {"end", h.end},         {"text", h.text},
+                                                           {"note", h.note},       {"color", h.color}};
+                                          if (!h.area.isEmpty())
+                                              mark.insert("area", QJsonArray{h.area.x(), h.area.y(), h.area.width(),
+                                                                             h.area.height()});
+                                          marks.append(mark);
+                                      }
                                       return marks;
                                   }()},
                                  {"bookmarks", [&] {
@@ -971,8 +980,11 @@ QVariantList Backend::highlights() const {
     if (!m_book || m_library.isEmpty() || m_library.first().path != m_book->path)
         return list;
     for (const Highlight &h : m_library.first().highlights)
-        list << QVariantMap{{"section", h.section}, {"start", h.start}, {"end", h.end}, {"text", h.text},
-                            {"note", h.note},       {"color", h.color}, {"chapter", chapterLabelFor(h.section)}};
+        list << QVariantMap{{"section", h.section}, {"start", h.start},     {"end", h.end},
+                            {"text", h.text},       {"note", h.note},       {"color", h.color},
+                            {"chapter", chapterLabelFor(h.section)},
+                            {"x", h.area.x()},      {"y", h.area.y()},      {"width", h.area.width()},
+                            {"height", h.area.height()}};
     return list;
 }
 
@@ -989,7 +1001,7 @@ int Backend::addHighlight(int start, int end, const QString &text, const QString
             notes << h.note.trimmed();
         return overlaps;
     });
-    marks << Highlight{m_section, start, end, text.trimmed(), notes.join("\n\n"), color};
+    marks << Highlight{m_section, start, end, text.trimmed(), notes.join("\n\n"), color, {}};
     std::sort(marks.begin(), marks.end(), [](const Highlight &a, const Highlight &b) {
         return std::tie(a.section, a.start) < std::tie(b.section, b.start);
     });
@@ -998,12 +1010,49 @@ int Backend::addHighlight(int start, int end, const QString &text, const QString
     return highlightAt(start);
 }
 
+int Backend::addPageHighlight(int page, double x, double y, double width, double height, const QString &color) {
+    Entry *entry = openEntry();
+    const QRectF area(x, y, width, height);
+    if (!entry || !m_book || !m_book->paged() || area.isEmpty() || !highlightColors().contains(color))
+        return -1;
+    auto &marks = entry->highlights;
+    // What it overlaps on the page gives way, and passes on its note.
+    QStringList notes;
+    marks.removeIf([&](const Highlight &h) {
+        const bool overlaps = h.section == page && h.area.intersects(area);
+        if (overlaps && !h.note.trimmed().isEmpty())
+            notes << h.note.trimmed();
+        return overlaps;
+    });
+    marks << Highlight{page, 0, 0, m_book->pageText(page, area).simplified(), notes.join("\n\n"), color, area};
+    std::sort(marks.begin(), marks.end(), [](const Highlight &a, const Highlight &b) {
+        return std::make_tuple(a.section, a.start, a.area.top()) < std::make_tuple(b.section, b.start, b.area.top());
+    });
+    emit highlightsChanged();
+    scheduleSave();
+    return pageHighlightAt(page, area.center().x(), area.center().y());
+}
+
+int Backend::pageHighlightAt(int page, double x, double y) const {
+    if (!m_book || m_library.isEmpty() || m_library.first().path != m_book->path)
+        return -1;
+    const auto &marks = m_library.first().highlights;
+    for (int i = 0; i < marks.size(); ++i)
+        if (marks[i].section == page && marks[i].area.contains(QPointF(x, y)))
+            return i;
+    return -1;
+}
+
+QString Backend::pageText(int page, double x, double y, double width, double height) const {
+    return m_book ? m_book->pageText(page, QRectF(x, y, width, height)).simplified() : QString();
+}
+
 int Backend::highlightAt(int position) const {
     if (!m_book || m_library.isEmpty() || m_library.first().path != m_book->path)
         return -1;
     const auto &marks = m_library.first().highlights;
     for (int i = 0; i < marks.size(); ++i)
-        if (marks[i].section == m_section && marks[i].start <= position && position < marks[i].end)
+        if (marks[i].section == m_section && marks[i].area.isEmpty() && marks[i].start <= position && position < marks[i].end)
             return i;
     return -1;
 }

@@ -190,7 +190,7 @@ int highlights(const QStringList &arguments) {
             for (const QJsonValue &mark : entry.value("highlights").toArray()) {
                 const QJsonObject m = mark.toObject();
                 marks << Highlight{m.value("section").toInt(), m.value("start").toInt(), m.value("end").toInt(),
-                                   m.value("text").toString(), m.value("note").toString(), m.value("color").toString()};
+                                   m.value("text").toString(), m.value("note").toString(), m.value("color").toString(), {}};
             }
         }
     }

@@ -25,6 +25,11 @@ Item {
     signal follow(int target, string url)
     // A new drag began here, so other pages let go of theirs.
     signal selectionStarted()
+    // A drag ended with an area marked, or a click landed on a highlight.
+    signal selectionMade(rect area)
+    signal highlightClicked(int index)
+    // The highlights' colors, by name, as the window paints them.
+    property var highlightColors: ({})
 
     function clearSelection() { selected = Qt.rect(0, 0, 0, 0) }
 
@@ -66,6 +71,15 @@ Item {
                 sheet.clearSelection()
                 sheet.selectionStarted()
             }
+            onReleased: mouse => {
+                if (sheet.hasSelection) {
+                    sheet.selectionMade(sheet.selected)
+                } else {
+                    const at = backend.pageHighlightAt(sheet.page, mouse.x / full.width, mouse.y / full.height)
+                    if (at >= 0)
+                        sheet.highlightClicked(at)
+                }
+            }
             onPositionChanged: mouse => {
                 const x = Math.max(0, Math.min(start.x, mouse.x)), y = Math.max(0, Math.min(start.y, mouse.y))
                 const right = Math.min(width, Math.max(start.x, mouse.x)), bottom = Math.min(height, Math.max(start.y, mouse.y))
@@ -82,6 +96,20 @@ Item {
             height: sheet.selected.height * full.height
             color: Qt.rgba(sheet.highlight.r, sheet.highlight.g, sheet.highlight.b, 0.18)
             border.color: sheet.highlight
+        }
+
+        // Highlights on the page, under its search matches.
+        Repeater {
+            model: backend.highlights.filter(h => h.section === sheet.page && h.width > 0)
+            delegate: Rectangle {
+                required property var modelData
+                x: modelData.x * full.width
+                y: modelData.y * full.height
+                width: modelData.width * full.width
+                height: modelData.height * full.height
+                color: sheet.highlightColors[modelData.color] || "yellow"
+                opacity: 0.38
+            }
         }
 
         Repeater {
