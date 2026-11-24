@@ -1062,9 +1062,40 @@ int Book::fragmentOffset(int section, const QString &fragment) const {
     return before + (before > 0 && blocks.contains(match.captured(1).toLower()) ? 1 : 0);
 }
 
+void Book::preparePlainText() const {
+    {
+        QMutexLocker lock(&m_plainMutex);
+        if (!m_plain.isEmpty() || paged())
+            return;
+    }
+    // Made without holding the lock, so a section asked for meanwhile, as the
+    // window's skimming asks, isn't kept waiting for the whole book.
+    QList<int> all(sections.size());
+    std::iota(all.begin(), all.end(), 0);
+    const Kind kind = this->kind;
+    const QStringList plain = QtConcurrent::blockingMapped(all, [this, kind](int section) {
+        if (kind == Kind::Text)
+            return sections[section];
+        QTextDocument document;
+        if (kind == Kind::Markdown)
+            document.setMarkdown(sections[section]);
+        else
+            document.setHtml(sections[section]);
+        return document.toPlainText();
+    });
+    QMutexLocker lock(&m_plainMutex);
+    if (m_plain.isEmpty())
+        m_plain = plain;
+}
+
 QString Book::plainText(int section) const {
     if (section < 0 || section >= sectionCount())
         return {};
+    {
+        QMutexLocker lock(&m_plainMutex);
+        if (section < m_plain.size())
+            return m_plain[section];
+    }
     switch (kind) {
     case Kind::Pdf: {
         QMutexLocker lock(&m_pdfMutex);
@@ -1150,6 +1181,7 @@ QList<SearchHit> Book::search(const QString &words, const std::atomic_bool *canc
         }
         return hits;
     }
+    preparePlainText();
     for (int section = 0; section < sections.size(); ++section) {
         if (cancel && *cancel)
             break;

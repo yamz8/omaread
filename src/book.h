@@ -101,6 +101,9 @@ public:
     // Where a section sits, as the book names it: its part and chapter,
     // "Part II · V", leaving out an entry that only repeats the book's title.
     QString chapterLabel(int section) const;
+    // Makes every section's plain text ready for searching, as the first
+    // search would; the window does it in the background once a book opens.
+    void preparePlainText() const;
     // Highlights and their notes as Markdown, under the book's title and
     // each chapter's name, to keep or share.
     QString notesMarkdown(const QList<Highlight> &highlights) const;
@@ -184,4 +187,9 @@ private:
     QString m_coverPath;
     // Poppler isn't safe to use from two threads at once.
     mutable QMutex m_pdfMutex;
+    // A flowing book's sections as plain text, made on the first search, a
+    // section to a core, and kept: laying out a chapter's HTML to read its
+    // words is what a search spends its time on.
+    mutable QMutex m_plainMutex;
+    mutable QStringList m_plain;
 };

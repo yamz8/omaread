@@ -19,6 +19,7 @@
 #include <QTextCursor>
 #include <QTextDocument>
 #include <QTextList>
+#include <QThreadPool>
 #include <QtConcurrent>
 
 #include <algorithm>
@@ -615,6 +616,8 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
         if (m_library[i].opened > 0 && ++opened > maxOpened && m_library[i].added == 0)
             m_library.removeAt(i--);
     saveCover(m_book);
+    // Ready for a search before one is asked for.
+    QThreadPool::globalInstance()->start([book = m_book] { book->preparePlainText(); }, -1);
     scheduleSave();
 
     setTarget(-1);
