@@ -2411,6 +2411,7 @@ ApplicationWindow {
 
             RowLayout {
                 Layout.fillWidth: true
+                Layout.bottomMargin: 8
                 spacing: 16
                 Repeater {
                     model: [qsTr("Contents"), qsTr("Bookmarks"), qsTr("Notes")]
@@ -2442,19 +2443,6 @@ ApplicationWindow {
                         }
                     }
                 }
-            }
-            // How far through the book, and how long is left.
-            Label {
-                objectName: "contentsProgress"
-                Layout.fillWidth: true
-                Layout.topMargin: 4
-                horizontalAlignment: Text.AlignLeft
-                elide: Text.ElideRight
-                color: win.muted
-                font.pixelSize: Math.round(win.uiSize * 6 / 7)
-                text: backend.minutesLeftInBook > 0
-                      ? qsTr("%1 read").arg(win.percent(backend.progress)) + "  ·  " + win.timeLeft(backend.minutesLeftInBook, true)
-                      : qsTr("%1 read").arg(win.percent(backend.progress))
             }
             Label {
                 Layout.fillWidth: true
