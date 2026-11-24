@@ -2072,14 +2072,36 @@ private slots:
         // The notebook opens at the other side, the text between the two,
         // and the keys go to it; closing it gives them back to the contents.
         auto *notebook = window->findChild<QObject *>("notebook");
+        const int wide = window->width();
+        const int panes = contents->property("width").toInt() * 2;
+        window->setWidth(panes + 900);
+        QTRY_VERIFY(window->property("roomForBoth").toBool());
+        const double betweenWidth = column->width();
         QTest::keyClick(window, Qt::Key_N, Qt::ControlModifier);
         QTRY_VERIFY(notebook->property("opened").toBool());
+        QVERIFY(contents->property("visible").toBool());
         QVERIFY(backend.notebookShown());
-        QCOMPARE(column->width(), columnWidth);
+        QCOMPARE(column->width(), betweenWidth);
+        QTRY_VERIFY(column->x() >= panes / 2);
+        QVERIFY(column->x() + betweenWidth <= window->width() - panes / 2);
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!notebook->property("visible").toBool());
         QVERIFY(!backend.notebookShown());
         QVERIFY(contents->property("visible").toBool());
+        // A window too narrow for both: opening one closes the other, which
+        // comes back when it widens, the keys staying where they were.
+        window->setWidth(panes + int(betweenWidth) - 40);
+        QTRY_VERIFY(!window->property("roomForBoth").toBool());
+        QTest::keyClick(window, Qt::Key_N, Qt::ControlModifier);
+        QTRY_VERIFY(notebook->property("opened").toBool());
+        QTRY_VERIFY(!contents->property("visible").toBool());
+        QVERIFY(backend.sidebar());
+        window->setWidth(panes + 900);
+        QTRY_VERIFY(contents->property("opened").toBool());
+        QVERIFY(notebook->property("visible").toBool());
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!notebook->property("visible").toBool());
+        window->setWidth(wide);
         // Escape closes it, gives the page its keys back, and is remembered.
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!contents->property("visible").toBool());

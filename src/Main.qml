@@ -64,6 +64,39 @@ ApplicationWindow {
     property real notebookInset: notebook.visible ? notebook.width : 0
     Behavior on contentsInset { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
     Behavior on notebookInset { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+    // Whether the window holds both panes with the text between them, uncovered.
+    readonly property bool roomForBoth: width - contents.width - notebook.width
+                                        >= (backend.paged ? width * 0.4 : prose.width + 32)
+    // A pane never covers the text: opening one where both don't fit closes
+    // the other, which comes back once the window has room for it again.
+    function openPane(pane, other) {
+        pane.bumped = false
+        if (other.visible && !roomForBoth) {
+            other.bumped = true
+            other.close()
+        }
+        pane.open()
+    }
+    onRoomForBothChanged: {
+        if (!backend.open)
+            return
+        if (!roomForBoth && contents.visible && notebook.visible) {
+            // The one without the keys makes way.
+            const other = noteList.activeFocus ? contents : notebook
+            other.bumped = true
+            other.close()
+        } else if (roomForBoth) {
+            // Whatever had the keys keeps them: a popup takes them as it opens.
+            const keys = noteList.activeFocus ? noteList : chapters.activeFocus ? chapters : view
+            for (const pane of [contents, notebook])
+                if (pane.bumped && !pane.visible) {
+                    pane.bumped = false
+                    pane.quiet = true
+                    pane.keysTo = keys
+                    pane.open()
+                }
+        }
+    }
     // A pane closing gives the keys to the other one still open, or the page.
     function giveKeysBack() {
         if (contents.visible)
@@ -760,8 +793,11 @@ ApplicationWindow {
             if (backend.open) {
                 if (backend.sidebar)
                     Qt.callLater(contents.open)
-                if (backend.notebookShown)
+                // Both, where they fit; the notebook waits for room otherwise.
+                if (backend.notebookShown && (!backend.sidebar || win.roomForBoth))
                     Qt.callLater(notebook.open)
+                else if (backend.notebookShown)
+                    notebook.bumped = true
             } else {
                 contents.close()
                 notebook.close()
@@ -2335,11 +2371,19 @@ ApplicationWindow {
     Popup {
         id: contents
         objectName: "contents"
+        // Closed to make room for the notebook, and to come back with room.
+        property bool bumped: false
+        // Opened again by the window's room, not by the reader: the keys stay
+        // where they are, given back here once it has opened.
+        property bool quiet: false
+        property Item keysTo: null
+        onOpened: if (keysTo) { keysTo.forceActiveFocus(); keysTo = null }
         // The pane's key and Escape remember the choice; leaving a book
         // closes it without.
         function toggle() {
             backend.sidebar = !visible
-            visible ? close() : open()
+            bumped = false
+            visible ? close() : win.openPane(contents, notebook)
         }
         x: win.rightToLeft ? win.width - width : 0
         y: 0
@@ -2373,7 +2417,9 @@ ApplicationWindow {
         onAboutToShow: {
             chapters.currentIndex = Math.max(0, backend.tocIndex)
             chapters.positionViewAtIndex(chapters.currentIndex, ListView.Center)
-            chapters.forceActiveFocus()
+            if (!quiet)
+                chapters.forceActiveFocus()
+            quiet = false
         }
         onClosed: win.giveKeysBack()
 
@@ -2499,9 +2545,14 @@ ApplicationWindow {
             filter === "all" || (filter === "bookmarks" ? m.kind === "bookmark"
                                 : filter === "notes" ? m.kind === "highlight" && m.note !== ""
                                 : m.kind === "highlight"))
+        property bool bumped: false
+        property bool quiet: false
+        property Item keysTo: null
+        onOpened: if (keysTo) { keysTo.forceActiveFocus(); keysTo = null }
         function toggle() {
             backend.notebookShown = !visible
-            visible ? close() : open()
+            bumped = false
+            visible ? close() : win.openPane(notebook, contents)
         }
         x: win.rightToLeft ? 0 : win.width - width
         y: 0
@@ -2532,7 +2583,9 @@ ApplicationWindow {
         }
         onAboutToShow: {
             noteList.currentIndex = 0
-            noteList.forceActiveFocus()
+            if (!quiet)
+                noteList.forceActiveFocus()
+            quiet = false
         }
         onFilterChanged: noteList.currentIndex = 0
         onClosed: win.giveKeysBack()
