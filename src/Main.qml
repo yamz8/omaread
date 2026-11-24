@@ -2915,60 +2915,106 @@ ApplicationWindow {
             radius: theme.radius
         }
 
-        ColumnLayout {
-            spacing: 6
-            // A popup is not an Item and doesn't inherit the window's
-            // mirroring, so its content opts in.
-            LayoutMirroring.enabled: win.rightToLeft
-            LayoutMirroring.childrenInherit: true
+        // The keys in groups, two columns of them on a wide window, one on a
+        // narrow one, scrolling when even that doesn't fit.
+        width: Math.min(win.width - 48, helpGrid.implicitWidth + leftPadding + rightPadding)
+        height: Math.min(win.height - 48, helpGrid.implicitHeight + topPadding + bottomPadding)
 
-            Repeater {
-                model: [
-                    { keys: "O", action: qsTr("Open a book or document") },
-                    { keys: "Space  →  PgDn", action: qsTr("Next screen or page") },
-                    { keys: "Shift+Space  ←  PgUp", action: qsTr("Previous screen or page") },
-                    { keys: "↓ ↑  J K", action: qsTr("Scroll") },
-                    { keys: "]  [", action: qsTr("Next or previous section") },
-                    { keys: "Home  End", action: qsTr("First or last section") },
-                    { keys: "G", action: qsTr("Skim the book, or go to a page") },
-                    { keys: "T", action: qsTr("Contents, bookmarks, and notes") },
-                    { keys: "/  Ctrl+F", action: qsTr("Find in the book") },
-                    { keys: "N  Shift+N", action: qsTr("Next or previous match") },
-                    { keys: "Ctrl+C", action: qsTr("Copy the selected words") },
-                    { keys: "+  −  0", action: qsTr("Larger, smaller, or reset text and pages") },
-                    { keys: "V", action: qsTr("Read a comic panel by panel, or whole pages") },
-                    { keys: "C", action: qsTr("Trim the white margins of a PDF's or comic's pages") },
-                    { keys: "Ctrl+scroll  pinch", action: qsTr("Zoom a page around the pointer") },
-                    { keys: "R", action: qsTr("Read a comic or PDF right to left, as manga, or left to right") },
-                    { keys: "W", action: qsTr("Fit pages to the width or the window") },
-                    { keys: "D", action: qsTr("One page or two side by side") },
-                    { keys: "I", action: qsTr("Color pages like the theme") },
-                    { keys: "V  S  Tab  /", action: qsTr("Library: covers or a list, the order, which books, search") },
-                    { keys: "M", action: qsTr("Library: mark a book finished, or not") },
-                    { keys: "B", action: qsTr("Bookmark the page, or remove its bookmark") },
-                    { keys: "H", action: qsTr("Highlight the words chosen; click one for a note or a color") },
-                    { keys: "Tab  Enter", action: qsTr("Choose a link or note on the page, and open it") },
-                    { keys: "Backspace  Shift+Backspace", action: qsTr("Back or forward after a jump") },
-                    { keys: "P", action: qsTr("Show time left, the page, or the percent read") },
-                    { keys: "S", action: qsTr("Reading settings: typeface, spacing, column") },
-                    { keys: "A", action: qsTr("Change how pages turn") },
-                    { keys: "F", action: qsTr("Full screen") },
-                    { keys: "Esc", action: qsTr("Back to the library") },
-                    { keys: "Enter  Delete", action: qsTr("Open or forget a book in the library") },
-                    { keys: "?", action: qsTr("Show or hide the shortcuts") },
-                    { keys: "Q", action: qsTr("Quit") }
-                ]
-                delegate: RowLayout {
-                    required property var modelData
-                    spacing: 24
+        Flickable {
+            anchors.fill: parent
+            contentWidth: helpGrid.implicitWidth
+            contentHeight: helpGrid.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {}
 
-                    Label {
-                        Layout.preferredWidth: win.uiSize * 12
-                        text: modelData.keys
-                        color: theme.accent
-                        font.bold: true
+            GridLayout {
+                id: helpGrid
+                columns: win.width > 1100 ? 2 : 1
+                columnSpacing: 40
+                rowSpacing: 18
+                // A popup is not an Item and doesn't inherit the window's
+                // mirroring, so its content opts in.
+                LayoutMirroring.enabled: win.rightToLeft
+                LayoutMirroring.childrenInherit: true
+
+                Repeater {
+                    model: [
+                        { title: qsTr("Reading"), keys: [
+                            { keys: "Space  PgDn", action: qsTr("Next screen or page") },
+                            { keys: "Shift+Space  PgUp", action: qsTr("Previous screen or page") },
+                            { keys: "→  ←", action: qsTr("Next or previous, as the book reads") },
+                            { keys: "↓ ↑  J K", action: qsTr("Scroll") },
+                            { keys: "]  [  Home  End", action: qsTr("Next, previous, first or last section") },
+                            { keys: "S", action: qsTr("Reading settings: typeface, spacing, column") },
+                            { keys: "P", action: qsTr("Show time left, the page, or the percent read") },
+                            { keys: "A", action: qsTr("Change how pages turn") },
+                            { keys: "+  −  0", action: qsTr("Larger, smaller, or reset text and pages") },
+                            { keys: "F", action: qsTr("Full screen") } ] },
+                        { title: qsTr("Finding your way"), keys: [
+                            { keys: "T", action: qsTr("Contents, bookmarks, and notes") },
+                            { keys: "G", action: qsTr("Skim the book, or go to a page") },
+                            { keys: "/  Ctrl+F", action: qsTr("Find in the book") },
+                            { keys: "N  Shift+N", action: qsTr("Next or previous match") },
+                            { keys: "Backspace", action: qsTr("Back after a jump; Shift+Backspace on again") },
+                            { keys: "Tab  Enter", action: qsTr("Choose a link or note on the page, and open it") } ] },
+                        { title: qsTr("Marking"), keys: [
+                            { keys: "B", action: qsTr("Bookmark the page, or remove its bookmark") },
+                            { keys: "H", action: qsTr("Highlight the words chosen; click one for a note or a color") },
+                            { keys: "Ctrl+C", action: qsTr("Copy the selected words") } ] },
+                        { title: qsTr("Comics and PDFs"), keys: [
+                            { keys: "D  W  I", action: qsTr("Two pages, fit to the width, tint like the theme") },
+                            { keys: "C", action: qsTr("Trim the white margins of a PDF's or comic's pages") },
+                            { keys: "V", action: qsTr("Read a comic panel by panel, or whole pages") },
+                            { keys: "R", action: qsTr("Read a comic or PDF right to left, as manga, or left to right") },
+                            { keys: "Ctrl+scroll", action: qsTr("Zoom a page around the pointer") } ] },
+                        { title: qsTr("Library"), keys: [
+                            { keys: "O", action: qsTr("Open a book or document") },
+                            { keys: "Enter  Delete", action: qsTr("Open or forget a book in the library") },
+                            { keys: "S  Tab  /  V", action: qsTr("Library: covers or a list, the order, which books, search") },
+                            { keys: "M", action: qsTr("Library: mark a book finished, or not") },
+                            { keys: "Esc", action: qsTr("Back to the library") },
+                            { keys: "?  Q", action: qsTr("Show or hide the shortcuts; quit") } ] }
+                    ]
+                    delegate: ColumnLayout {
+                        id: group
+                        required property var modelData
+                        Layout.alignment: Qt.AlignTop
+                        spacing: 5
+                        Label {
+                            text: group.modelData.title
+                            font.bold: true
+                            color: win.muted
+                        }
+                        GridLayout {
+                            columns: 2
+                            columnSpacing: 20
+                            rowSpacing: 5
+                            Repeater {
+                                model: group.modelData.keys
+                                delegate: Label {
+                                    required property var modelData
+                                    required property int index
+                                    // Keys in the first column, what they do in the second.
+                                    Layout.row: index
+                                    Layout.column: 0
+                                    text: modelData.keys
+                                    color: theme.accent
+                                    font.bold: true
+                                }
+                            }
+                            Repeater {
+                                model: group.modelData.keys
+                                delegate: Label {
+                                    required property var modelData
+                                    required property int index
+                                    Layout.row: index
+                                    Layout.column: 1
+                                    text: modelData.action
+                                }
+                            }
+                        }
                     }
-                    Label { text: modelData.action }
                 }
             }
         }
