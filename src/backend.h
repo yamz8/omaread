@@ -106,6 +106,9 @@ class Backend : public QObject {
     // The open book's highlights, in reading order, each {section, start, end,
     // text, note, color, chapter}.
     Q_PROPERTY(QVariantList highlights READ highlights NOTIFY highlightsChanged)
+    // Time spent reading, today and these last seven days, in minutes, and
+    // the books finished this year: {today, week, finishedThisYear}.
+    Q_PROPERTY(QVariantMap readingStats READ readingStats NOTIFY statsChanged)
     Q_PROPERTY(bool canGoBack READ canGoBack NOTIFY historyChanged)
     Q_PROPERTY(bool canGoForward READ canGoForward NOTIFY historyChanged)
     Q_PROPERTY(int minutesLeftInChapter READ minutesLeftInChapter NOTIFY positionChanged)
@@ -218,6 +221,10 @@ public:
     // A screen's worth of reading: how long it took, and how much of the
     // section it held. Pauses and skims are left out.
     Q_INVOKABLE void noteReading(double seconds, double fraction);
+    // A page read for so long, counted toward the day's time; a page left
+    // open while away counts five minutes at most.
+    Q_INVOKABLE void noteTimeRead(double seconds);
+    QVariantMap readingStats() const;
     QString progressShows() const { return m_progressShows; }
     void setProgressShows(const QString &shows);
     static QStringList progressModes() { return {"chapter", "book", "page", "percent", "none"}; }
@@ -366,6 +373,7 @@ signals:
     void lookedUp(const QString &word, const QString &definition);
     // The book open was just read to its end.
     void bookFinished();
+    void statsChanged();
     void targetChanged();
     void searchChanged();
     void hitChanged();
@@ -390,6 +398,8 @@ private:
         QList<Bookmark> bookmarks;
         QList<Highlight> highlights;
         bool finished = false;
+        // When it was read to its end, for the year's count.
+        qint64 finishedAt = 0;
         // Read right to left: the book's own say, until the reader changes it.
         int rightToLeft = -1;
         // When a book found in a watched folder arrived there; 0 for one opened.
@@ -479,6 +489,8 @@ private:
     double m_wordsPerMinute = defaultWordsPerMinute;
     QString m_progressShows = "chapter";
     QString m_libraryView = "grid", m_librarySort = "recent", m_libraryFilter = "all";
+    // Seconds read on each day, by "2026-11-24".
+    QMap<QString, double> m_readingDays;
     void setChoice(QString *setting, const QString &value, const QStringList &choices);
     QString m_typeface = "serif";
     QString m_lineSpacing = "normal";

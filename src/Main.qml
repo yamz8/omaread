@@ -148,9 +148,17 @@ ApplicationWindow {
     property double screenStarted: 0
     onActiveChanged: screenStarted = active ? Date.now() : 0
     function noteScreenRead() {
-        if (!backend.paged && screenStarted > 0 && active && view.contentHeight > 0)
-            backend.noteReading((Date.now() - screenStarted) / 1000, Math.min(1, view.height / view.contentHeight))
+        if (screenStarted > 0 && active) {
+            const seconds = (Date.now() - screenStarted) / 1000
+            backend.noteTimeRead(seconds)
+            if (!backend.paged && view.contentHeight > 0)
+                backend.noteReading(seconds, Math.min(1, view.height / view.contentHeight))
+        }
         screenStarted = Date.now()
+    }
+    // Minutes as the library says them: "25 min", "3 h 10 min".
+    function minutes(m) {
+        return m >= 60 ? qsTr("%1 h %2 min").arg(number(Math.floor(m / 60))).arg(number(m % 60)) : qsTr("%Ln min", "", m)
     }
     // Panel view: a comic read a panel at a time, each zoomed to fill the
     // window, then on to the next page's first panel. A page without panels
@@ -227,7 +235,7 @@ ApplicationWindow {
     }
     function backward() {
         letLinkGo()
-        screenStarted = Date.now()
+        noteScreenRead()
         if (panelView && panels.length > 0 && panelIndex > 0) {
             turn(-1, () => { --panelIndex; framePanel() })
             return
@@ -891,7 +899,21 @@ ApplicationWindow {
                             font.pixelSize: win.uiSize * 2
                             font.bold: true
                         }
-                        Item { Layout.fillWidth: true }
+                        // Time spent reading, and books finished, once there's any.
+                        Label {
+                            objectName: "readingStats"
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 8
+                            horizontalAlignment: Text.AlignLeft
+                            color: win.muted
+                            elide: Text.ElideRight
+                            readonly property var stats: backend.readingStats
+                            visible: stats.week > 0 || stats.finishedThisYear > 0
+                            text: [stats.today > 0 ? qsTr("Today %1").arg(win.minutes(stats.today)) : "",
+                                   stats.week > 0 ? qsTr("This week %1").arg(win.minutes(stats.week)) : "",
+                                   stats.finishedThisYear > 0 ? qsTr("%Ln finished this year", "", stats.finishedThisYear) : ""]
+                                  .filter(t => t !== "").join("  ·  ")
+                        }
                         TextField {
                             id: shelfSearch
                             objectName: "shelfSearch"

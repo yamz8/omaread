@@ -1,5 +1,6 @@
 {
   "%1 couldn't be read. It may be damaged.": "%1 couldn't be read. It may be damaged.",
+  "%1 h %2 min": "%1 h %2 min",
   "%1 h %2 min left in book": "%1 h %2 min left in book",
   "%1 has nothing in it to read.": "%1 has nothing in it to read.",
   "%1 is locked with a password.": "%1 is locked with a password.",
@@ -7,6 +8,14 @@
   "%1 of %2": "%1 of %2",
   "%1 read": "%1 read",
   "%1%": "%1%",
+  "%Ln finished this year": {
+    "one": "%Ln finished this year",
+    "other": "%Ln finished this year"
+  },
+  "%Ln min": {
+    "one": "%Ln min",
+    "other": "%Ln min"
+  },
   "%Ln min left in book": {
     "one": "%Ln min left in book",
     "other": "%Ln min left in book"
@@ -151,9 +160,11 @@
   "The portal file picker failed: %1": "The portal file picker failed: %1",
   "There are no words there to copy": "There are no words there to copy",
   "This book has no table of contents. Use [ and ] to move between sections.": "This book has no table of contents. Use [ and ] to move between sections.",
+  "This week %1": "This week %1",
   "Time left in book": "Time left in book",
   "Time left in chapter": "Time left in chapter",
   "Title": "Title",
+  "Today %1": "Today %1",
   "Trim the white margins of a PDF's or comic's pages": "Trim the white margins of a PDF's or comic's pages",
   "Typeface": "Typeface",
   "V: covers": "V: covers",

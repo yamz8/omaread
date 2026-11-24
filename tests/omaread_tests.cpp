@@ -1066,6 +1066,28 @@ private slots:
         QCOMPARE(Book::contentBox(page), QRectF(0, 0, 1, 1));
     }
 
+    void backendCountsTimeRead() {
+        QTemporaryDir state, files;
+        FakePicker picker;
+        {
+            Backend backend(state.path(), &picker);
+            QCOMPARE(backend.readingStats().value("week").toInt(), 0);
+            backend.openFile(writeText(files.filePath("short.md"), "# Short\nOne.\n## End\nTwo.\n"));
+            QTRY_VERIFY(backend.isOpen());
+            backend.noteTimeRead(1);           // a glance: not reading
+            backend.noteTimeRead(600);         // left open: five minutes at most
+            backend.noteTimeRead(120);
+            QCOMPARE(backend.readingStats().value("today").toInt(), 7);
+            QCOMPARE(backend.readingStats().value("week").toInt(), 7);
+            backend.goTo(1, 1);
+            QCOMPARE(backend.readingStats().value("finishedThisYear").toInt(), 1);
+            backend.save();
+        }
+        Backend again(state.path(), &picker);
+        QCOMPARE(again.readingStats().value("today").toInt(), 7);
+        QCOMPARE(again.readingStats().value("finishedThisYear").toInt(), 1);
+    }
+
     void backendRemembersHowTextIsSet() {
         QTemporaryDir state;
         FakePicker picker;

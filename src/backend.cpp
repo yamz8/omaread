@@ -2,6 +2,7 @@
 
 #include <QClipboard>
 #include <QCryptographicHash>
+#include <QDate>
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>
@@ -110,6 +111,9 @@ void Backend::readState() {
         m_columnWidth = value;
     m_justify = state.value("justify").toBool();
     m_trimMargins = state.value("trimMargins").toBool();
+    const QJsonObject days = state.value("readingDays").toObject();
+    for (auto it = days.begin(); it != days.end(); ++it)
+        m_readingDays.insert(it.key(), it.value().toDouble());
     m_wordsPerMinute = std::clamp(state.value("wordsPerMinute").toDouble(defaultWordsPerMinute), 80.0, 900.0);
     if (const QString value = state.value("progressShows").toString(); progressModes().contains(value))
         m_progressShows = value;
@@ -130,7 +134,8 @@ void Backend::readState() {
                     book.value("kind").toString(), book.value("section").toInt(), book.value("sections").toInt(),
                     std::clamp(book.value("position").toDouble(), 0.0, 1.0), qint64(book.value("opened").toDouble()),
                     book.value("progress").toDouble(-1), {}, {},
-                    book.value("finished").toBool(), book.value("rightToLeft").toInt(-1),
+                    book.value("finished").toBool(), qint64(book.value("finishedAt").toDouble()),
+                    book.value("rightToLeft").toInt(-1),
                     qint64(book.value("added").toDouble()), book.value("hidden").toBool()};
         for (const QJsonValue &mark : book.value("highlights").toArray()) {
             const QJsonObject m = mark.toObject();
@@ -164,7 +169,7 @@ void Backend::save() {
                                  {"position", entry.position}, {"opened", double(entry.opened)},
                                  {"progress", entry.progress}, {"finished", entry.finished},
                                  {"added", double(entry.added)}, {"hidden", entry.hidden},
-                                 {"rightToLeft", entry.rightToLeft},
+                                 {"rightToLeft", entry.rightToLeft}, {"finishedAt", double(entry.finishedAt)},
                                  {"highlights", [&] {
                                       QJsonArray marks;
                                       for (const Highlight &h : entry.highlights)
@@ -192,7 +197,12 @@ void Backend::save() {
         {"typeface", m_typeface},   {"lineSpacing", m_lineSpacing}, {"columnWidth", m_columnWidth},
         {"justify", m_justify},     {"wordsPerMinute", m_wordsPerMinute},
         {"progressShows", m_progressShows}, {"folders", QJsonArray::fromStringList(m_folders)},
-        {"trimMargins", m_trimMargins}, {"libraryView", m_libraryView}, {"librarySort", m_librarySort}, {"libraryFilter", m_libraryFilter},
+        {"trimMargins", m_trimMargins}, {"libraryView", m_libraryView}, {"readingDays", [&] {
+             QJsonObject days;
+             for (auto it = m_readingDays.cbegin(); it != m_readingDays.cend(); ++it)
+                 days.insert(it.key(), std::round(it.value()));
+             return days;
+         }()}, {"librarySort", m_librarySort}, {"libraryFilter", m_libraryFilter},
         {"books", books}};
     QDir().mkpath(QFileInfo(m_stateFile).path());
     // Atomic, so a crash mid-write never loses the whole library.
@@ -373,6 +383,33 @@ void Backend::noteReading(double seconds, double fraction) {
     m_wordsPerMinute = std::clamp(m_wordsPerMinute * 0.9 + pace * 0.1, 80.0, 900.0);
     emit positionChanged();
     scheduleSave();
+}
+
+void Backend::noteTimeRead(double seconds) {
+    if (!m_book || seconds < 2)
+        return;
+    const QString today = QDate::currentDate().toString(Qt::ISODate);
+    m_readingDays[today] += std::min(seconds, 300.0);
+    // A year and a little is all the counts ask for.
+    while (m_readingDays.size() > 400)
+        m_readingDays.erase(m_readingDays.begin());
+    emit statsChanged();
+    scheduleSave();
+}
+
+QVariantMap Backend::readingStats() const {
+    const QDate today = QDate::currentDate();
+    double week = 0;
+    for (int day = 0; day < 7; ++day)
+        week += m_readingDays.value(today.addDays(-day).toString(Qt::ISODate));
+    int finished = 0;
+    for (const Entry &entry : m_library)
+        if (entry.finished && entry.finishedAt > 0
+            && QDateTime::fromMSecsSinceEpoch(entry.finishedAt).date().year() == today.year())
+            ++finished;
+    return {{"today", int(m_readingDays.value(today.toString(Qt::ISODate)) / 60)},
+            {"week", int(week / 60)},
+            {"finishedThisYear", finished}};
 }
 
 void Backend::setProgressShows(const QString &shows) {
@@ -592,6 +629,7 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
     QList<Entry::Bookmark> bookmarks;
     QList<Highlight> highlights;
     bool finished = false;
+    qint64 finishedAt = 0;
     int rightToLeft = -1;
     qint64 added = 0;
     const auto it = std::find_if(m_library.begin(), m_library.end(),
@@ -602,13 +640,14 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
         bookmarks = it->bookmarks;
         highlights = it->highlights;
         finished = it->finished;
+        finishedAt = it->finishedAt;
         rightToLeft = it->rightToLeft;
         added = it->added;
         m_library.erase(it);
     }
     m_library.prepend(Entry{m_book->path, m_book->title, m_book->author, m_book->kindName(), m_section,
                             m_book->sectionCount(), m_position, QDateTime::currentMSecsSinceEpoch(), progress(),
-                            bookmarks, highlights, finished, rightToLeft, added, false});
+                            bookmarks, highlights, finished, finishedAt, rightToLeft, added, false});
     // Enough to find any recent book again without the list becoming an
     // archive; books in a watched folder stay whatever their age.
     int opened = 0;
@@ -652,7 +691,7 @@ void Backend::forgetPath(const QString &path) {
         return path.startsWith(QDir::cleanPath(folder) + '/');
     });
     if (watched && QFileInfo::exists(path))
-        *it = Entry{path, it->title, it->author, it->kind, 0, it->sections, 0, 0, -1, {}, {}, false, -1, it->added, true};
+        *it = Entry{path, it->title, it->author, it->kind, 0, it->sections, 0, 0, -1, {}, {}, false, 0, -1, it->added, true};
     else
         m_library.erase(it);
     emit libraryChanged();
@@ -663,6 +702,8 @@ void Backend::setFinished(const QString &path, bool finished) {
     for (Entry &entry : m_library)
         if (entry.path == path && entry.finished != finished) {
             entry.finished = finished;
+            entry.finishedAt = finished ? QDateTime::currentMSecsSinceEpoch() : 0;
+            emit statsChanged();
             emit libraryChanged();
             scheduleSave();
         }
@@ -798,7 +839,7 @@ void Backend::scanFolders() {
         const QString suffix = info.suffix().toLower();
         const QString kind = suffix == "pdf" ? "pdf" : suffix == "epub" ? "epub"
                            : suffix.startsWith("cb") ? "comic" : suffix == "txt" ? "text" : "markdown";
-        m_library << Entry{path, Book::titleFromFileName(path), {}, kind, 0, 0, 0, 0, -1, {}, {}, false, -1,
+        m_library << Entry{path, Book::titleFromFileName(path), {}, kind, 0, 0, 0, 0, -1, {}, {}, false, 0, -1,
                            info.birthTime().isValid() ? info.birthTime().toMSecsSinceEpoch()
                                                       : info.lastModified().toMSecsSinceEpoch(), false};
         changed = true;
@@ -1289,6 +1330,8 @@ void Backend::remember() {
     // The end of the book's text: it's read.
     if (!m_library.first().finished && m_library.first().progress >= 0.995) {
         m_library.first().finished = true;
+        m_library.first().finishedAt = QDateTime::currentMSecsSinceEpoch();
+        emit statsChanged();
         emit bookFinished();
         emit libraryChanged();
     }
