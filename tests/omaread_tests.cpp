@@ -395,6 +395,20 @@ class OmareadTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void panelsInPaleColorsAreFound() {
+        // Six flat panels on white, one of them a pale yellow about as bright
+        // as the gutters: each is a panel.
+        QImage page(600, 900, QImage::Format_RGB32);
+        page.fill(Qt::white);
+        QPainter painter(&page);
+        const QList<QColor> colors{QColor("#2b4f86"), QColor("#f1cf63"), QColor("#c0392b"),
+                                   QColor("#3d7a5a"), QColor("#cfe8f5"), QColor("#d98b3a")};
+        for (int i = 0; i < 6; ++i)
+            painter.fillRect(24 + (i % 2) * 282, 24 + (i / 2) * 288, 270, 270, colors[i]);
+        painter.end();
+        QCOMPARE(Book::findPanels(page, false).size(), 6);
+    }
+
     void initTestCase() { QQuickStyle::setStyle("Material"); }
 
     void epubReadsChaptersAndContents() {

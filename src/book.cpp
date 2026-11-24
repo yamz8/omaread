@@ -404,19 +404,38 @@ QList<QRectF> Book::panels(int page, bool rightToLeft) const {
 QList<QRectF> Book::findPanels(const QImage &source, bool rightToLeft) {
     if (source.isNull() || source.width() < 40 || source.height() < 40)
         return {};
-    const QImage image = source.convertToFormat(QImage::Format_Grayscale8);
+    // Compared by color, not brightness alone: a pale yellow or sky-blue panel
+    // is nearly as bright as a white gutter, and would be read as empty. A
+    // scanned page's speckled gutters stay well within the margin.
+    const QImage image = source.convertToFormat(QImage::Format_RGB32);
     const int width = image.width(), height = image.height();
-    // The gutters' color: what most of the page's edge is.
-    QList<int> edge;
+    auto pixel = [&](int x, int y) { return reinterpret_cast<const QRgb *>(image.constScanLine(y))[x]; };
+    // The gutters' color: what most of the page's edge is, channel by channel.
+    QList<int> reds, greens, blues;
+    auto sample = [&](int x, int y) {
+        const QRgb c = pixel(x, y);
+        reds << qRed(c);
+        greens << qGreen(c);
+        blues << qBlue(c);
+    };
     for (int x = 0; x < width; x += 2) {
-        edge << image.constScanLine(1)[x] << image.constScanLine(height - 2)[x];
+        sample(x, 1);
+        sample(x, height - 2);
     }
     for (int y = 0; y < height; y += 2) {
-        edge << image.constScanLine(y)[1] << image.constScanLine(y)[width - 2];
+        sample(1, y);
+        sample(width - 2, y);
     }
-    std::sort(edge.begin(), edge.end());
-    const int ground = edge[edge.size() / 2];
-    auto ink = [&](int x, int y) { return std::abs(int(image.constScanLine(y)[x]) - ground) > 48; };
+    auto median = [](QList<int> &values) {
+        std::sort(values.begin(), values.end());
+        return values[values.size() / 2];
+    };
+    const int groundRed = median(reds), groundGreen = median(greens), groundBlue = median(blues);
+    auto ink = [&](int x, int y) {
+        const QRgb c = pixel(x, y);
+        return std::max({std::abs(qRed(c) - groundRed), std::abs(qGreen(c) - groundGreen),
+                         std::abs(qBlue(c) - groundBlue)}) > 32;
+    };
 
     struct Box {
         int left, top, right, bottom;    // right and bottom exclusive
