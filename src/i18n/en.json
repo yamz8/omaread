@@ -75,6 +75,7 @@
   "Look up": "Look up",
   "Look up online": "Look up online",
   "Looking up…": "Looking up…",
+  "Margins trimmed": "Margins trimmed",
   "Medium": "Medium",
   "Missing": "Missing",
   "Missing: %1": "Missing: %1",
@@ -149,12 +150,14 @@
   "Time left in book": "Time left in book",
   "Time left in chapter": "Time left in chapter",
   "Title": "Title",
+  "Trim the white margins of a PDF's or comic's pages": "Trim the white margins of a PDF's or comic's pages",
   "Typeface": "Typeface",
   "V: covers": "V: covers",
   "V: list": "V: list",
   "Whole pages": "Whole pages",
   "Wide": "Wide",
   "Your note": "Your note",
+  "Zoom a page around the pointer": "Zoom a page around the pointer",
   "← → a page  ·  Shift+← → a chapter  ·  Enter to go  ·  Esc to stay": "← → a page  ·  Shift+← → a chapter  ·  Enter to go  ·  Esc to stay",
   "↑ ↓ to choose  ·  ← → to change  ·  S to close": "↑ ↓ to choose  ·  ← → to change  ·  S to close"
 }

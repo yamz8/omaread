@@ -327,6 +327,39 @@ QString Book::notesMarkdown(const QList<Highlight> &highlights) const {
     return out;
 }
 
+QRectF Book::contentBox(int page) const {
+    if (!paged() || page < 0 || page >= aspects.size())
+        return QRectF(0, 0, 1, 1);
+    return contentBox(renderPage(page, QSize(400, 400)));
+}
+
+QRectF Book::contentBox(const QImage &source) {
+    const QRectF whole(0, 0, 1, 1);
+    if (source.isNull())
+        return whole;
+    const QImage image = source.convertToFormat(QImage::Format_Grayscale8);
+    int left = image.width(), top = image.height(), right = -1, bottom = -1;
+    for (int y = 0; y < image.height(); ++y) {
+        const uchar *line = image.constScanLine(y);
+        for (int x = 0; x < image.width(); ++x)
+            if (line[x] < 235) {
+                left = std::min(left, x);
+                right = std::max(right, x);
+                top = std::min(top, y);
+                bottom = std::max(bottom, y);
+            }
+    }
+    if (right < left || bottom < top)
+        return whole;
+    // A little room around the words, as a page's own margin would leave.
+    const double pad = 0.02;
+    QRectF box(double(left) / image.width() - pad, double(top) / image.height() - pad,
+               double(right - left + 1) / image.width() + 2 * pad, double(bottom - top + 1) / image.height() + 2 * pad);
+    box = box.intersected(whole);
+    // Hardly any margin: nothing worth trimming.
+    return box.width() * box.height() > 0.94 ? whole : box;
+}
+
 QList<QRectF> Book::panels(int page, bool rightToLeft) const {
     if (!paged() || page < 0 || page >= aspects.size())
         return {};

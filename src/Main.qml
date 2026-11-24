@@ -90,7 +90,35 @@ ApplicationWindow {
         return Number(n).toLocaleString(Qt.locale(), 'f', 0)
     }
     function percent(p) { return qsTr("%1%").arg(number(Math.round(p * 100))) }
-    function aspect(page) { return backend.aspects[page] || 0.7071 }
+    // A page's width over its height: the whole page's, or, with the margins
+    // trimmed, its content's. Panel view always works on whole pages.
+    function fullAspect(page) { return backend.aspects[page] || 0.7071 }
+    function crop(page) {
+        return backend.trimMargins && !panelView && backend.paged ? backend.contentBox(page) : Qt.rect(0, 0, 1, 1)
+    }
+    function aspect(page) {
+        const c = crop(page)
+        return fullAspect(page) * c.width / c.height
+    }
+    // Zooms a PDF's or comic's pages around a point of the view, keeping what
+    // is under it there: the pointer's place for a wheel, a pinch's middle.
+    function zoomAt(factor, px, py) {
+        const before = zoom, after = Math.max(0.5, Math.min(6, zoom * factor))
+        if (Math.abs(after - before) < 0.001)
+            return
+        const cx = view.contentX + px, cy = view.contentY + py
+        const oldX = spreadRow.x, oldY = spreadRow.y, oldWidth = spreadRow.width, oldHeight = spreadRow.height
+        restoring = true
+        zoom = after
+        // The pages laid out at the new size now, not at the next frame, so
+        // the view is placed against where they really are.
+        spreadRow.forceLayout()
+        const kx = spreadRow.width / oldWidth, ky = spreadRow.height / oldHeight
+        view.contentX = Math.max(0, Math.min(spreadRow.x + (cx - oldX) * kx - px, Math.max(0, view.contentWidth - view.width)))
+        view.contentY = Math.max(0, Math.min(spreadRow.y + (cy - oldY) * ky - py, Math.max(0, view.contentHeight - view.height)))
+        restoring = false
+        backend.position = view.contentHeight > view.height ? view.contentY / (view.contentHeight - view.height) : 0
+    }
 
     // One screen on; at the end of a section, the start of the next. A flowing
     // book's next screen starts with the line the last one cut off, so every
@@ -422,7 +450,9 @@ ApplicationWindow {
         }
         restoring = true
         view.contentY = backend.position * Math.max(0, view.contentHeight - view.height)
-        view.contentX = Math.max(0, (view.contentWidth - view.width) / 2)
+        // Zoomed in on a page, the reader's place across it stays.
+        view.contentX = backend.paged && zoom > 1 ? Math.max(0, Math.min(view.contentX, view.contentWidth - view.width))
+                                                  : Math.max(0, (view.contentWidth - view.width) / 2)
         restoring = false
     }
     // Brings a place in the text into view, a little below the top.
@@ -442,7 +472,8 @@ ApplicationWindow {
             const at = hit ? shownPages.indexOf(hit.page) : -1
             const sheet = at >= 0 ? sheets.itemAt(at) : null
             if (sheet) {
-                const y = spreadRow.y + hit.y * sheet.height
+                const c = crop(hit.page)
+                const y = spreadRow.y + (hit.y - c.y) / c.height * sheet.height
                 if (y < view.contentY || y > view.contentY + view.height - 40)
                     reveal(y - view.height / 3)
             }
@@ -653,6 +684,15 @@ ApplicationWindow {
     Shortcut { sequence: "Right"; enabled: win.reading; onActivated: win.bookRightToLeft ? win.backward() : win.forward() }
     Shortcut { sequence: "Left"; enabled: win.reading; onActivated: win.bookRightToLeft ? win.forward() : win.backward() }
     Shortcut { sequence: "V"; enabled: win.reading && backend.paged; onActivated: win.setPanelView(!win.panelView) }
+    Shortcut {
+        sequence: "C"
+        enabled: win.reading && backend.paged
+        onActivated: {
+            backend.trimMargins = !backend.trimMargins
+            win.say(backend.trimMargins ? qsTr("Margins trimmed") : qsTr("Whole pages"))
+            Qt.callLater(win.restore)
+        }
+    }
     Shortcut {
         sequence: "R"
         enabled: win.reading && backend.paged
@@ -1103,6 +1143,28 @@ ApplicationWindow {
                             ScrollBar.vertical: ScrollBar {}
                             ScrollBar.horizontal: ScrollBar {}
 
+                            // Ctrl with the wheel zooms a page around the pointer, or sets a
+                            // flowing book's text larger or smaller; a pinch zooms too.
+                            WheelHandler {
+                                acceptedModifiers: Qt.ControlModifier
+                                target: null
+                                onWheel: event => {
+                                    if (backend.paged)
+                                        win.zoomAt(Math.pow(1.0015, event.angleDelta.y), point.position.x, point.position.y)
+                                    else if (event.angleDelta.y !== 0)
+                                        win.resize(event.angleDelta.y > 0 ? 1 : -1)
+                                }
+                            }
+                            PinchHandler {
+                                target: null
+                                enabled: backend.paged
+                                property real last: 1
+                                onActiveChanged: last = 1
+                                onActiveScaleChanged: {
+                                    win.zoomAt(activeScale / last, centroid.position.x, centroid.position.y)
+                                    last = activeScale
+                                }
+                            }
                             onContentYChanged: if (!win.restoring && contentHeight > height)
                                 backend.position = contentY / (contentHeight - height)
                             onContentHeightChanged: Qt.callLater(win.restore)
@@ -1136,6 +1198,7 @@ ApplicationWindow {
                                         required property int modelData
                                         page: modelData
                                         tint: win.tint
+                                        crop: win.crop(modelData)
                                         highlight: theme.accent
                                         spotlight: win.panelView && win.panels.length > 0 && modelData === backend.section
                                                    ? Qt.rect(win.panels[win.panelIndex].x, win.panels[win.panelIndex].y,
@@ -1318,8 +1381,10 @@ ApplicationWindow {
                         visible: false
                         asynchronous: true
                         source: "image://omaread/page/" + backend.bookId + "/" + modelData + win.tint
-                        sourceSize: Qt.size(Math.round(spreadRow.pageHeight * win.aspect(modelData) * Screen.devicePixelRatio),
-                                            Math.round(spreadRow.pageHeight * Screen.devicePixelRatio))
+                        // The whole page, at the size the page shows it, as the page asks for it.
+                        sourceSize: Qt.size(Math.round(spreadRow.pageHeight / win.crop(modelData).height * win.fullAspect(modelData)
+                                                       * Screen.devicePixelRatio),
+                                            Math.round(spreadRow.pageHeight / win.crop(modelData).height * Screen.devicePixelRatio))
                     }
                 }
 
@@ -2533,7 +2598,7 @@ ApplicationWindow {
                 Layout.alignment: Qt.AlignHCenter
                 visible: backend.paged
                 Layout.preferredHeight: Math.round(win.height * 0.3)
-                Layout.preferredWidth: Math.round(Layout.preferredHeight * win.aspect(skim.page - 1))
+                Layout.preferredWidth: Math.round(Layout.preferredHeight * win.fullAspect(skim.page - 1))
                 fillMode: Image.PreserveAspectFit
                 asynchronous: true
                 source: backend.paged && skim.visible ? "image://omaread/page/" + backend.bookId + "/" + (skim.page - 1) + win.tint : ""
@@ -2717,6 +2782,8 @@ ApplicationWindow {
                     { keys: "Ctrl+C", action: qsTr("Copy the selected words") },
                     { keys: "+  −  0", action: qsTr("Larger, smaller, or reset text and pages") },
                     { keys: "V", action: qsTr("Read a comic panel by panel, or whole pages") },
+                    { keys: "C", action: qsTr("Trim the white margins of a PDF's or comic's pages") },
+                    { keys: "Ctrl+scroll  pinch", action: qsTr("Zoom a page around the pointer") },
                     { keys: "R", action: qsTr("Read a comic or PDF right to left, as manga, or left to right") },
                     { keys: "W", action: qsTr("Fit pages to the width or the window") },
                     { keys: "D", action: qsTr("One page or two side by side") },

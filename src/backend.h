@@ -96,6 +96,8 @@ class Backend : public QObject {
     Q_PROPERTY(bool rightToLeft READ rightToLeft WRITE setRightToLeft NOTIFY bookChanged)
     // Counts up whenever a page's panels have been found, for bindings to ask again.
     Q_PROPERTY(int panelsFound READ panelsFound NOTIFY panelsChanged)
+    // Whether a PDF's or comic's white margins are trimmed, for every book.
+    Q_PROPERTY(bool trimMargins READ trimMargins WRITE setTrimMargins NOTIFY settingsChanged)
     // The open book's bookmarks, in reading order, each {section, position,
     // text, chapter}: the place, the first words there, and its chapter.
     Q_PROPERTY(QVariantList bookmarks READ bookmarks NOTIFY bookmarksChanged)
@@ -196,6 +198,10 @@ public:
     QVariantList bookmarks() const;
     bool rightToLeft() const;
     int panelsFound() const { return m_panelsFound; }
+    bool trimMargins() const { return m_trimMargins; }
+    void setTrimMargins(bool trim);
+    // Where a page's content lies, as fractions of it, to show trimmed.
+    Q_INVOKABLE QRectF contentBox(int page);
     // A page's panels, each {x, y, width, height} as fractions of it, in reading
     // order. The first ask finds them in the background, and says so after.
     Q_INVOKABLE QVariantList panelsOf(int page);
@@ -420,6 +426,8 @@ private:
     };
     QList<Place> m_back, m_forward;
     QHash<int, QList<QRectF>> m_panels;
+    QHash<int, QRectF> m_contentBoxes;
+    bool m_trimMargins = false;
     QSet<int> m_panelsAsked;
     int m_panelsFound = 0;
     mutable bool m_painting = false;

@@ -1047,6 +1047,24 @@ private slots:
         QVERIFY(Book::findPanels(cover, false).isEmpty());
     }
 
+    void pagesKnowWhereTheirContentIs() {
+        // A page with wide margins: its content, with a little room kept.
+        QImage page(1000, 1400, QImage::Format_RGB32);
+        page.fill(Qt::white);
+        QPainter painter(&page);
+        painter.fillRect(200, 300, 600, 700, Qt::black);
+        painter.end();
+        const QRectF box = Book::contentBox(page);
+        QVERIFY(qAbs(box.x() - 0.18) < 0.01);
+        QVERIFY(qAbs(box.y() - (300.0 / 1400 - 0.02)) < 0.01);
+        QVERIFY(qAbs(box.width() - 0.64) < 0.01);
+        // A page filled to its edges, or a blank one, is left whole.
+        page.fill(Qt::black);
+        QCOMPARE(Book::contentBox(page), QRectF(0, 0, 1, 1));
+        page.fill(Qt::white);
+        QCOMPARE(Book::contentBox(page), QRectF(0, 0, 1, 1));
+    }
+
     void backendRemembersHowTextIsSet() {
         QTemporaryDir state;
         FakePicker picker;
@@ -1723,6 +1741,54 @@ private slots:
         QVERIFY(!window->property("panelView").toBool());
         QCOMPARE(window->property("zoom").toDouble(), 1.0);
         QVERIFY(backend.isOpen());
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    }
+
+    void windowTrimsAndZoomsPages() {
+        QTemporaryDir dir, files;
+        Translator translator(dir.path() + "/language");
+        Theme theme(dir.path());
+        FakePicker picker;
+        Backend backend(dir.path() + "/state", &picker);
+        QQmlApplicationEngine engine;
+        QStringList warnings;
+        connect(&engine, &QQmlEngine::warnings, this, [&](const QList<QQmlError> &errors) {
+            for (const auto &error : errors)
+                warnings << error.toString();
+        });
+        engine.rootContext()->setContextProperty("translator", &translator);
+        engine.rootContext()->setContextProperty("theme", &theme);
+        engine.rootContext()->setContextProperty("backend", &backend);
+        engine.addImageProvider("omaread", backend.createPageProvider());
+        engine.load(QUrl("qrc:/Main.qml"));
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        QVERIFY(window);
+        QVERIFY(QTest::qWaitForWindowExposed(window));
+        window->requestActivate();
+        QVERIFY(QTest::qWaitForWindowActive(window));
+        QTRY_VERIFY(window->property("settled").toBool());
+        backend.setTransition("none");
+        backend.openFile(writePdf(files.path(), 2));
+        QTRY_VERIFY(backend.paged());
+        auto *spread = item(window->contentItem(), "spread");
+        const double whole = spread->width() / spread->height();
+        // C trims the margins: the page shown is its content, a different shape.
+        QTest::keyClick(window, Qt::Key_C);
+        QVERIFY(backend.trimMargins());
+        QTRY_VERIFY(qAbs(spread->width() / spread->height() - whole) > 0.01);
+        QTest::keyClick(window, Qt::Key_C);
+        QVERIFY(!backend.trimMargins());
+        // Zooming around a point keeps what is under it there.
+        auto *view = item(window->contentItem(), "view");
+        // A point well inside the page, where the view can keep it in place.
+        const QPointF at(spread->x() + spread->width() * 0.6 - view->property("contentX").toDouble(), view->height() * 0.4);
+        const double before = (view->property("contentX").toDouble() + at.x() - spread->x()) / spread->width();
+        // Three times as large, so the page is wide enough to scroll to it.
+        QMetaObject::invokeMethod(window, "zoomAt", Q_ARG(QVariant, 3.0), Q_ARG(QVariant, at.x()), Q_ARG(QVariant, at.y()));
+        QCOMPARE(window->property("zoom").toDouble(), 3.0);
+        QTRY_VERIFY(spread->width() > 0);
+        const double after = (view->property("contentX").toDouble() + at.x() - spread->x()) / spread->width();
+        QVERIFY2(qAbs(after - before) < 0.02, qPrintable(QString("%1 -> %2").arg(before).arg(after)));
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 

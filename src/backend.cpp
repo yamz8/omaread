@@ -107,6 +107,7 @@ void Backend::readState() {
     if (const QString value = state.value("columnWidth").toString(); columnWidths().contains(value))
         m_columnWidth = value;
     m_justify = state.value("justify").toBool();
+    m_trimMargins = state.value("trimMargins").toBool();
     m_wordsPerMinute = std::clamp(state.value("wordsPerMinute").toDouble(defaultWordsPerMinute), 80.0, 900.0);
     if (const QString value = state.value("progressShows").toString(); progressModes().contains(value))
         m_progressShows = value;
@@ -181,7 +182,7 @@ void Backend::save() {
         {"typeface", m_typeface},   {"lineSpacing", m_lineSpacing}, {"columnWidth", m_columnWidth},
         {"justify", m_justify},     {"wordsPerMinute", m_wordsPerMinute},
         {"progressShows", m_progressShows}, {"folders", QJsonArray::fromStringList(m_folders)},
-        {"libraryView", m_libraryView}, {"librarySort", m_librarySort}, {"libraryFilter", m_libraryFilter},
+        {"trimMargins", m_trimMargins}, {"libraryView", m_libraryView}, {"librarySort", m_librarySort}, {"libraryFilter", m_libraryFilter},
         {"books", books}};
     QDir().mkpath(QFileInfo(m_stateFile).path());
     // Atomic, so a crash mid-write never loses the whole library.
@@ -616,6 +617,7 @@ void Backend::loaded(int generation, const QString &path, const Loaded &result) 
     emit highlightsChanged();
     m_panels.clear();
     m_panelsAsked.clear();
+    m_contentBoxes.clear();
     emit bookChanged();
     updateText();
     emit sectionChanged();
@@ -834,6 +836,7 @@ void Backend::close() {
     emit highlightsChanged();
     m_panels.clear();
     m_panelsAsked.clear();
+    m_contentBoxes.clear();
     emit bookChanged();
     updateText();
     emit sectionChanged();
@@ -905,6 +908,23 @@ bool Backend::rightToLeft() const {
     if (!m_library.isEmpty() && m_library.first().path == m_book->path && m_library.first().rightToLeft >= 0)
         return m_library.first().rightToLeft == 1;
     return m_book->rightToLeft;
+}
+
+void Backend::setTrimMargins(bool trim) {
+    if (trim == m_trimMargins)
+        return;
+    m_trimMargins = trim;
+    emit settingsChanged();
+    scheduleSave();
+}
+
+QRectF Backend::contentBox(int page) {
+    if (!m_book || !m_book->paged())
+        return QRectF(0, 0, 1, 1);
+    // Drawn small, once a page, as it is first shown.
+    if (!m_contentBoxes.contains(page))
+        m_contentBoxes.insert(page, m_book->contentBox(page));
+    return m_contentBoxes.value(page);
 }
 
 QVariantList Backend::panelsOf(int page) {

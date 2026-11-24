@@ -54,6 +54,8 @@ omaread skill install               # teach coding agents to use these commands
 | `N` `Shift+N` | Next or previous match |
 | `Ctrl+C` | Copy the selected words |
 | `+` `−` `0` | Larger, smaller, or reset text and pages |
+| `C` | Trim the white margins of a PDF's or comic's pages |
+| `Ctrl`+scroll, pinch | Zoom a page around the pointer; in a book, the text size |
 | `V` | Read a comic panel by panel, each zoomed to fill the window, or whole pages |
 | `R` | Read a comic or PDF right to left, as manga, or left to right |
 | `W` | Fit pages to the width or the window |

@@ -106,6 +106,10 @@ public:
     // from the top, and in a row from the left, or from the right when the
     // book reads right to left. Empty when the page isn't cut into panels.
     QList<QRectF> panels(int page, bool rightToLeft) const;
+    // Where a page's content lies, as fractions of it: its white margins left
+    // out, with a little room kept. The whole page when it has none.
+    QRectF contentBox(int page) const;
+    static QRectF contentBox(const QImage &page);
     // The same, for a page already drawn.
     static QList<QRectF> findPanels(const QImage &page, bool rightToLeft);
 
