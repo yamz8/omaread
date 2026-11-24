@@ -20,7 +20,7 @@ The footer names the part and chapter, "Part II · V", and tells the time left i
 
 ## Finding your way
 
-`T` opens the contents in a sidebar beside the page, with each chapter's page; `Tab` there switches to your notes: bookmarks, highlights and what you wrote on them, together in reading order. It stays open as you jump from one to the next, and the text moves over to make room without changing width, so page numbers stay put. With the mouse, the same sidebar and the reading settings are a click away at the page's top corner, shown while the pointer moves. `G` skims the whole book a page or a chapter at a time, showing each page's first lines, and goes to a page by its number. `/` searches the book for words that begin with what you type, listing each match in the words around it. After any jump, through the contents, a link, a bookmark or a search, `Backspace` goes back to where you were. `Tab` steps through the links and note numbers on the page, for the keyboard.
+`T` opens the contents in a sidebar beside the page, with each chapter's page; `Tab` there switches to your notes: bookmarks, highlights and what you wrote on them, together in reading order. It stays open as you jump from one to the next, and the text moves over to make room without changing width, so page numbers stay put. `G` skims the whole book a page or a chapter at a time, showing each page's first lines, and goes to a page by its number. `/` searches the book for words that begin with what you type, listing each match in the words around it. After any jump, through the contents, a link, a bookmark or a search, `Backspace` goes back to where you were. `Tab` steps through the links and note numbers on the page, for the keyboard.
 
 ## Highlights and notes
 

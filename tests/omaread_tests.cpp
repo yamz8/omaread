@@ -2064,21 +2064,6 @@ private slots:
             QTRY_VERIFY(column->x() >= side);
         else
             QTRY_VERIFY(column->x() >= columnX);
-        // The mouse finds the same sidebar: moving it over the page shows a
-        // button for it, which closes it again.
-        auto *buttons = item(window->contentItem(), "pageButtons");
-        QVERIFY(buttons);
-        QVERIFY(!buttons->isVisible());
-        QTest::mouseMove(window, QPoint(window->width() / 2, window->height() / 2));
-        QTest::mouseMove(window, QPoint(window->width() / 2 + 10, window->height() / 2 + 10));
-        QTRY_VERIFY(buttons->isVisible());
-        QTRY_COMPARE(buttons->opacity(), 1.0);
-        const QPointF first = buttons->mapToScene(QPointF(17, 17));
-        QTest::mouseClick(window, Qt::LeftButton, {}, first.toPoint());
-        QTRY_VERIFY(!contents->property("visible").toBool());
-        QVERIFY(!backend.sidebar());
-        QTest::mouseClick(window, Qt::LeftButton, {}, first.toPoint());
-        QTRY_VERIFY(contents->property("opened").toBool());
         // Escape closes it, gives the page its keys back, and is remembered.
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!contents->property("visible").toBool());

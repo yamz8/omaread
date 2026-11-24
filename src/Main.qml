@@ -58,13 +58,6 @@ ApplicationWindow {
                                  || lookup.visible
                                  || findField.activeFocus || shelfSearch.activeFocus
     readonly property bool reading: backend.open && !busy && settled
-    // The page's buttons, while the mouse moves over it.
-    property bool pageButtonsShown: false
-    function showPageButtons() {
-        pageButtonsShown = true
-        pageButtonsTimer.restart()
-    }
-    Timer { id: pageButtonsTimer; interval: 2200; onTriggered: win.pageButtonsShown = false }
     // How much of the window's side the contents sidebar takes, eased as it slides.
     property real sideInset: contents.visible ? contents.width : 0
     Behavior on sideInset { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
@@ -1456,83 +1449,6 @@ ApplicationWindow {
                             height: lineCover.bottom
                             visible: height > 0
                             color: theme.background
-                        }
-
-                        // The mouse's way to the contents and the reading settings:
-                        // shown while the pointer moves over the page, gone a moment
-                        // after it rests, and never by the keyboard.
-                        HoverHandler {
-                            id: pagePointer
-                            onPointChanged: win.showPageButtons()
-                        }
-                        Row {
-                            id: pageButtons
-                            objectName: "pageButtons"
-                            anchors.top: parent.top
-                            anchors.topMargin: 10
-                            anchors.right: parent.right
-                            anchors.rightMargin: 52
-                            spacing: 4
-                            opacity: (win.pageButtonsShown || buttonsHover.hovered) && !win.panelView ? 1 : 0
-                            visible: opacity > 0
-                            Behavior on opacity { NumberAnimation { duration: 220 } }
-                            HoverHandler { id: buttonsHover }
-
-                            Repeater {
-                                model: [{ key: "contents", tip: qsTr("Contents and notes  (T)") },
-                                        { key: "settings", tip: qsTr("Reading settings  (S)") }]
-                                delegate: Rectangle {
-                                    id: pageButton
-                                    required property var modelData
-                                    visible: modelData.key !== "settings" || !backend.paged
-                                    width: 34
-                                    height: 34
-                                    radius: Math.min(4, theme.radius)
-                                    color: buttonArea.containsMouse ? theme.colors.selection
-                                         : Qt.rgba(theme.background.r, theme.background.g, theme.background.b, 0.85)
-                                    Accessible.role: Accessible.Button
-                                    Accessible.name: modelData.tip
-                                    Accessible.onPressAction: buttonArea.clicked(null)
-                                    ToolTip.visible: buttonArea.containsMouse
-                                    ToolTip.delay: 500
-                                    ToolTip.text: modelData.tip
-                                    // Contents: lines of a list, the inner ones indented.
-                                    Column {
-                                        visible: pageButton.modelData.key === "contents"
-                                        anchors.centerIn: parent
-                                        spacing: 3
-                                        Repeater {
-                                            model: [14, 10, 10, 14]
-                                            delegate: Rectangle {
-                                                required property int modelData
-                                                required property int index
-                                                x: modelData < 14 ? 4 : 0
-                                                width: modelData
-                                                height: 2
-                                                radius: 1
-                                                color: contents.visible && index === 0 ? theme.accent : theme.foreground
-                                            }
-                                        }
-                                    }
-                                    Label {
-                                        visible: pageButton.modelData.key === "settings"
-                                        anchors.centerIn: parent
-                                        text: "Aa"
-                                        font.family: "Noto Serif"
-                                        font.bold: true
-                                        color: settings.visible ? theme.accent : theme.foreground
-                                    }
-                                    MouseArea {
-                                        id: buttonArea
-                                        anchors.fill: parent
-                                        hoverEnabled: true
-                                        cursorShape: Qt.PointingHandCursor
-                                        onClicked: pageButton.modelData.key === "contents"
-                                                   ? contents.toggle()
-                                                   : (settings.visible ? settings.close() : settings.open())
-                                    }
-                                }
-                            }
                         }
 
                         // A ribbon on a bookmarked page, as on a book's corner.
