@@ -20,7 +20,7 @@ The footer names the part and chapter, "Part II · V", and tells the time left i
 
 ## Finding your way
 
-`T` opens the contents, with each chapter's page; `Tab` there switches to your bookmarks and your notes. `G` skims the whole book a page or a chapter at a time, showing each page's first lines, and goes to a page by its number. `/` searches the book for words that begin with what you type, listing each match in the words around it. After any jump, through the contents, a link, a bookmark or a search, `Backspace` goes back to where you were. `Tab` steps through the links and note numbers on the page, for the keyboard.
+`T` opens the contents in a sidebar beside the page, with each chapter's page; `Tab` there switches to your bookmarks and your notes. It stays open as you jump from one to the next, and the text moves over to make room without changing width, so page numbers stay put. `G` skims the whole book a page or a chapter at a time, showing each page's first lines, and goes to a page by its number. `/` searches the book for words that begin with what you type, listing each match in the words around it. After any jump, through the contents, a link, a bookmark or a search, `Backspace` goes back to where you were. `Tab` steps through the links and note numbers on the page, for the keyboard.
 
 ## Highlights and notes
 
@@ -66,7 +66,7 @@ omaread skill install               # teach coding agents to use these commands
 
 | Finding your way | |
 | --- | --- |
-| `T` | Contents, bookmarks and notes (`Tab` switches) |
+| `T` | Contents, bookmarks and notes in a sidebar (`Tab` switches) |
 | `G` | Skim the book, or go to a page |
 | `/` `Ctrl+F`, `N` `Shift+N` | Find in the book, and the next or previous match |
 | `Backspace` `Shift+Backspace` | Back to where a jump left, and on again |

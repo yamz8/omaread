@@ -131,6 +131,8 @@ class Backend : public QObject {
     Q_PROPERTY(QString lineSpacing READ lineSpacing WRITE setLineSpacing NOTIFY settingsChanged)
     Q_PROPERTY(QString columnWidth READ columnWidth WRITE setColumnWidth NOTIFY settingsChanged)
     Q_PROPERTY(bool justify READ justify WRITE setJustify NOTIFY settingsChanged)
+    // Whether the contents sidebar is open, so a book opens with it as the last was left.
+    Q_PROPERTY(bool sidebar READ sidebar WRITE setSidebar NOTIFY settingsChanged)
 
 public:
     static constexpr double defaultTextScale = 1.5;
@@ -245,6 +247,8 @@ public:
     void setColumnWidth(const QString &width);
     bool justify() const { return m_justify; }
     void setJustify(bool justify);
+    bool sidebar() const { return m_sidebar; }
+    void setSidebar(bool sidebar);
     static QStringList typefaces() { return {"serif", "sans"}; }
     static QStringList lineSpacings() { return {"compact", "normal", "relaxed"}; }
     static QStringList columnWidths() { return {"narrow", "medium", "wide"}; }
@@ -496,6 +500,7 @@ private:
     QString m_lineSpacing = "normal";
     QString m_columnWidth = "medium";
     bool m_justify = false;
+    bool m_sidebar = false;
     bool m_spread = false;
     QString m_transition = "slide";
     QTimer m_saveTimer;

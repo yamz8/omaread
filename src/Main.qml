@@ -58,6 +58,9 @@ ApplicationWindow {
                                  || lookup.visible
                                  || findField.activeFocus || shelfSearch.activeFocus
     readonly property bool reading: backend.open && !busy && settled
+    // How much of the window's side the contents sidebar takes, eased as it slides.
+    property real sideInset: contents.visible ? contents.width : 0
+    Behavior on sideInset { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
     readonly property bool browsing: !backend.open && !busy && settled
     readonly property bool shelfKeys: browsing && !shelfSearch.activeFocus
 
@@ -739,7 +742,14 @@ ApplicationWindow {
         // Until the new text is laid out and the view moved to its place, the
         // view still scrolled for the old one isn't the reader moving: taken
         // for it, a jump to a chapter's start landed as far down as the place left.
-        function onBookChanged() { win.restoring = true; win.panelView = false; win.zoom = 1; win.finding = false; win.screenStarted = Date.now(); Qt.callLater(win.restore) }
+        function onBookChanged() {
+            win.restoring = true; win.panelView = false; win.zoom = 1; win.finding = false; win.screenStarted = Date.now(); Qt.callLater(win.restore)
+            // The contents sidebar comes back with the next book, as it was left.
+            if (backend.open && backend.sidebar)
+                Qt.callLater(contents.open)
+            else if (!backend.open)
+                contents.close()
+        }
         function onSectionChanged() { win.restoring = true; win.clearSelections(); Qt.callLater(win.restore) }
         // New text, for a new section or a new text size: its layout moves the
         // view, which mustn't move the reader's place.
@@ -819,7 +829,7 @@ ApplicationWindow {
     Shortcut { sequences: ["Return", "Enter"]; enabled: win.reading && win.chosenLink !== null; onActivated: win.openChosenLink() }
     Shortcut { sequences: ["Backspace", "Alt+Left"]; enabled: win.reading && backend.canGoBack; onActivated: win.goBack() }
     Shortcut { sequences: ["Shift+Backspace", "Alt+Right"]; enabled: win.reading && backend.canGoForward; onActivated: win.goForward() }
-    Shortcut { sequence: "T"; enabled: backend.open && (!win.busy || contents.visible); onActivated: contents.visible ? contents.close() : contents.open() }
+    Shortcut { sequence: "T"; enabled: backend.open && (!win.busy || contents.visible); onActivated: contents.toggle() }
     Shortcut { sequence: "G"; enabled: win.reading; onActivated: skim.open() }
     Shortcut { sequences: ["/", StandardKey.Find]; enabled: win.shelfKeys && backend.library.length > 0; onActivated: shelfSearch.forceActiveFocus() }
     Shortcut { sequences: ["/", StandardKey.Find]; enabled: backend.open && settled && !help.opened && !contents.visible && !skim.visible; onActivated: win.startFinding() }
@@ -1355,7 +1365,17 @@ ApplicationWindow {
                                 Accessible.name: backend.chapterLabel || backend.title
                                 readonly property int margin: 40
                                 visible: !backend.paged
-                                x: (view.width - width) / 2
+                                // Beside the contents sidebar: centered in what it leaves of
+                                // the window, or as far from it as the window allows. The
+                                // text never changes width, and with it the page count, so
+                                // on a narrow window the sidebar lies over part of it.
+                                x: {
+                                    const centered = (view.width - width) / 2
+                                    const room = view.width - win.sideInset
+                                    if (win.rightToLeft)
+                                        return Math.min(centered, Math.max((room - width) / 2, 16))
+                                    return Math.max(centered, Math.min(win.sideInset + (room - width) / 2, view.width - width - 16))
+                                }
                                 y: margin
                                 width: Math.max(200, Math.min(view.width - 2 * 32, win.readingSize * win.columnChars))
                                 text: backend.text
@@ -2288,32 +2308,53 @@ ApplicationWindow {
         }
     }
 
-    // The table of contents and the bookmarks, a tab each: Up and Down to
-    // choose, Enter to go there, Tab to switch, Delete to remove a bookmark.
+    // The contents, bookmarks and notes, a tab each, in a sidebar beside the
+    // page: Up and Down to choose, Enter to go there and stay, Tab to switch,
+    // Delete to remove, T or Escape to close and give the keys back to the page.
     Popup {
         id: contents
         objectName: "contents"
         // Which list: 0 the contents, 1 the bookmarks, 2 the highlights and notes.
         property int tab: 0
         function nextTab() { tab = (tab + 1) % 3 }
-        anchors.centerIn: Overlay.overlay
-        width: Math.min(600, win.width - 64)
-        height: Math.min(contentsColumn.implicitHeight + topPadding + bottomPadding, win.height - 96)
-        modal: true
+        // T and Escape remember the choice; leaving a book closes it without.
+        function toggle() {
+            backend.sidebar = !visible
+            visible ? close() : open()
+        }
+        x: win.rightToLeft ? win.width - width : 0
+        y: 0
+        width: Math.min(Math.round(win.uiSize * 23), win.width - 48)
+        height: win.height - Math.round(win.uiSize * 2.3)
+        modal: false
+        dim: false
         focus: true
-        padding: 20
+        // Clicking the page keeps it open: words are chosen there to highlight.
+        closePolicy: Popup.NoAutoClose
+        padding: 16
+        topPadding: 20
         background: Rectangle {
             color: theme.background
-            border.color: theme.colors.selection
-            radius: theme.radius
+            // The edge toward the page.
+            Rectangle {
+                width: 1
+                height: parent.height
+                x: win.rightToLeft ? 0 : parent.width - 1
+                color: theme.colors.selection
+            }
+        }
+        enter: Transition {
+            NumberAnimation { property: "x"; from: win.rightToLeft ? win.width : -contents.width; to: win.rightToLeft ? win.width - contents.width : 0; duration: 180; easing.type: Easing.OutCubic }
+        }
+        exit: Transition {
+            NumberAnimation { property: "x"; to: win.rightToLeft ? win.width : -contents.width; duration: 150; easing.type: Easing.InCubic }
         }
         // The list takes the keys as the panel starts to appear, not once its
         // opening animation ends, or a key pressed right after T is lost.
-        onAboutToShow: {
-            tab = 0
-            focusList()
-        }
+        onAboutToShow: focusList()
         onTabChanged: if (visible) focusList()
+        // The page has the keys again.
+        onClosed: view.forceActiveFocus()
 
         function focusList() {
             if (tab === 1) {
@@ -2332,18 +2373,15 @@ ApplicationWindow {
             backend.goToEntry(index)
             win.hintBack()
             Qt.callLater(win.restore)
-            close()
         }
         function chooseNote(index) {
             backend.goToHighlight(index)
             win.hintBack()
-            close()
         }
         function chooseMark(index) {
             backend.goToBookmark(index)
             win.hintBack()
             Qt.callLater(win.restore)
-            close()
         }
         // The first page of a section, as the footer counts them, or "" while
         // they're being counted.
@@ -2366,13 +2404,14 @@ ApplicationWindow {
             id: contentsColumn
             anchors.fill: parent
             spacing: 12
+            Keys.onEscapePressed: contents.toggle()
             // A popup doesn't inherit the window's mirroring.
             LayoutMirroring.enabled: win.rightToLeft
             LayoutMirroring.childrenInherit: true
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 20
+                spacing: 16
                 Repeater {
                     model: [qsTr("Contents"),
                             backend.bookmarks.length > 0 ? qsTr("Bookmarks (%1)").arg(win.number(backend.bookmarks.length)) : qsTr("Bookmarks"),
@@ -2381,9 +2420,17 @@ ApplicationWindow {
                         required property int index
                         required property string modelData
                         text: modelData
-                        font.pixelSize: Math.round(win.uiSize * 10 / 7)
                         font.bold: true
                         color: index === contents.tab ? theme.foreground : win.muted
+                        // The chosen tab, underlined in the accent.
+                        Rectangle {
+                            visible: parent.index === contents.tab
+                            anchors.top: parent.bottom
+                            anchors.topMargin: 4
+                            width: parent.width
+                            height: 2
+                            color: theme.accent
+                        }
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
@@ -2391,19 +2438,19 @@ ApplicationWindow {
                         }
                     }
                 }
-                // How far through the book, and how long is left, shortened to
-                // fit beside the tabs rather than widening the panel.
-                Label {
-                    objectName: "contentsProgress"
-                    Layout.fillWidth: true
-                    Layout.preferredWidth: 0
-                    elide: Text.ElideRight
-                    horizontalAlignment: Text.AlignRight
-                    color: win.muted
-                    text: backend.minutesLeftInBook > 0
-                          ? qsTr("%1 read").arg(win.percent(backend.progress)) + "  ·  " + win.timeLeft(backend.minutesLeftInBook, true)
-                          : qsTr("%1 read").arg(win.percent(backend.progress))
-                }
+            }
+            // How far through the book, and how long is left.
+            Label {
+                objectName: "contentsProgress"
+                Layout.fillWidth: true
+                Layout.topMargin: 4
+                horizontalAlignment: Text.AlignLeft
+                elide: Text.ElideRight
+                color: win.muted
+                font.pixelSize: Math.round(win.uiSize * 6 / 7)
+                text: backend.minutesLeftInBook > 0
+                      ? qsTr("%1 read").arg(win.percent(backend.progress)) + "  ·  " + win.timeLeft(backend.minutesLeftInBook, true)
+                      : qsTr("%1 read").arg(win.percent(backend.progress))
             }
             Label {
                 Layout.fillWidth: true
@@ -2424,7 +2471,6 @@ ApplicationWindow {
                 objectName: "chapters"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredHeight: contentHeight
                 visible: contents.tab === 0 && count > 0
                 clip: true
                 model: backend.toc
@@ -2485,7 +2531,6 @@ ApplicationWindow {
                 objectName: "bookmarks"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredHeight: contentHeight
                 visible: contents.tab === 1 && count > 0
                 clip: true
                 model: backend.bookmarks
@@ -2547,7 +2592,6 @@ ApplicationWindow {
                 objectName: "notebook"
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredHeight: contentHeight
                 visible: contents.tab === 2 && count > 0
                 clip: true
                 spacing: 4
@@ -2632,14 +2676,21 @@ ApplicationWindow {
                     }
                 }
             }
+            // Keeps the hints at the foot when the tab has nothing to list.
+            Item {
+                Layout.fillHeight: true
+                visible: !chapters.visible && !markList.visible && !noteList.visible
+            }
             Label {
                 Layout.fillWidth: true
-                horizontalAlignment: Text.AlignHCenter
+                horizontalAlignment: Text.AlignLeft
                 color: win.muted
+                wrapMode: Text.Wrap
                 font.pixelSize: Math.round(win.uiSize * 6 / 7)
-                text: contents.tab === 2 ? qsTr("Enter to go there  ·  Delete to remove  ·  C to copy them all as Markdown")
-                    : contents.tab === 1 ? qsTr("Enter to go there  ·  Delete to remove  ·  Tab for notes")
-                    : qsTr("Enter to go there  ·  Tab for bookmarks")
+                text: (contents.tab === 2 ? qsTr("Enter to go there  ·  Delete to remove  ·  C to copy them all as Markdown")
+                     : contents.tab === 1 ? qsTr("Enter to go there  ·  Delete to remove  ·  Tab for notes")
+                     : qsTr("Enter to go there  ·  Tab for bookmarks"))
+                      + "\n" + qsTr("T or Esc to close")
             }
         }
     }

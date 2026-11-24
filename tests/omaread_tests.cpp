@@ -1609,9 +1609,12 @@ private slots:
         QTest::keyClick(window, Qt::Key_Tab);
         QCOMPARE(contents->property("tab").toInt(), 1);
         QTest::keyClick(window, Qt::Key_Return);
-        QTRY_VERIFY(!contents->property("visible").toBool());
         QCOMPARE(backend.section(), 1);
         QTRY_VERIFY(window->property("bookmarkHere").toBool());
+        // The sidebar stays beside the page until T closes it.
+        QVERIFY(contents->property("visible").toBool());
+        QTest::keyClick(window, Qt::Key_T);
+        QTRY_VERIFY(!contents->property("visible").toBool());
     }
 
     void windowCountsPagesAsSpaceTurnsThem() {
@@ -1722,8 +1725,9 @@ private slots:
         QTest::keyClick(window, Qt::Key_Tab);
         QCOMPARE(contents->property("tab").toInt(), 2);
         QTest::keyClick(window, Qt::Key_Return);
-        QTRY_VERIFY(!contents->property("visible").toBool());
         QCOMPARE(backend.target(), 8);
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTRY_VERIFY(!contents->property("visible").toBool());
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 
@@ -2030,12 +2034,30 @@ private slots:
 
         // The contents choose a chapter with Down and Enter.
         auto *contents = window->findChild<QObject *>("contents");
+        auto *column = item(window->contentItem(), "prose");
+        const double columnWidth = column->width(), columnX = column->x();
         QTest::keyClick(window, Qt::Key_T);
         QTRY_VERIFY(contents->property("opened").toBool());
+        QVERIFY(backend.sidebar());
         QTest::keyClick(window, Qt::Key_Down);
         QTest::keyClick(window, Qt::Key_Down);
         QTest::keyClick(window, Qt::Key_Return);
+        QCOMPARE(backend.section(), 2);
+        // The sidebar takes the window's side without narrowing the text,
+        // which moves over when there's room for it.
+        QCOMPARE(column->width(), columnWidth);
+        const double side = contents->property("width").toDouble();
+        if (window->width() - side >= columnWidth + 32)
+            QTRY_VERIFY(column->x() >= side);
+        else
+            QTRY_VERIFY(column->x() >= columnX);
+        // Escape closes it, gives the page its keys back, and is remembered.
+        QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!contents->property("visible").toBool());
+        QVERIFY(!backend.sidebar());
+        QTest::keyClick(window, Qt::Key_BracketLeft);
+        QCOMPARE(backend.section(), 1);
+        QTest::keyClick(window, Qt::Key_BracketRight);
         QCOMPARE(backend.section(), 2);
 
         // The text size grows from the desktop's, and 0 puts it back.
