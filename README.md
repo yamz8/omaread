@@ -54,8 +54,8 @@ omaread skill install               # teach coding agents to use these commands
 
 | Reading | |
 | --- | --- |
-| `Space` `PgDn` / `Shift+Space` `PgUp` | Next or previous screen |
-| `→` `←` | Next or previous screen; the other way round in a book read right to left |
+| `Space` `PgDn` / `Shift+Space` `PgUp` | Next or previous page |
+| `→` `←` | Next or previous page; the other way round in a book read right to left |
 | `↓` `↑` `J` `K` | Next or previous page; scroll a PDF or comic |
 | `]` `[` `Home` `End` | Next, previous, first or last section |
 | `S` | Reading settings: typeface, text size, line spacing, column, alignment |
