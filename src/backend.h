@@ -91,6 +91,8 @@ class Backend : public QObject {
     // The book's pages at the window's size and the reading settings, as Space
     // turns them; 0 while they are being counted, and for a PDF or comic.
     Q_PROPERTY(int pageCount READ pageCount NOTIFY pagesChanged)
+    // While the pages are being counted again; the last count stays shown.
+    Q_PROPERTY(bool countingPages READ countingPages NOTIFY pagesChanged)
     // Whether the open book is read from right to left, as manga are: pages
     // side by side start on the right, and the arrows turn the other way.
     Q_PROPERTY(bool rightToLeft READ rightToLeft WRITE setRightToLeft NOTIFY bookChanged)
@@ -195,6 +197,7 @@ public:
     static QStringList transitions() { return {"slide", "flip", "cover", "fade", "none"}; }
     QString chapterLabel() const;
     int pageCount() const;
+    bool countingPages() const { return m_countingPages; }
     QVariantList bookmarks() const;
     bool rightToLeft() const;
     int panelsFound() const { return m_panelsFound; }
@@ -455,6 +458,8 @@ private:
     QList<int> m_pagesBefore;
     QTimer m_pageTimer;
     int m_pageGeneration = 0;
+    bool m_countingPages = false;
+    QString m_pagesPath;
     std::shared_ptr<std::atomic_bool> m_pageCancel;
     void countPages();
     QVariantList m_links;

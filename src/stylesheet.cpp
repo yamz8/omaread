@@ -51,6 +51,8 @@ struct Node {
     int count = 0;                  // the parent's element children
     int typeIndex = 0, typeCount = 0;
     Node *previous = nullptr;       // the element before it among its siblings
+    QString id;
+    QStringList classes;
 
     bool isText() const { return tag.isEmpty(); }
     QString attribute(const QString &name) const {
@@ -270,14 +272,11 @@ bool matchesCompound(const Compound &compound, const Node *node) {
         return false;
     if (!compound.tag.isEmpty() && compound.tag != node->tag)
         return false;
-    if (!compound.id.isEmpty() && node->attribute("id") != compound.id)
+    if (!compound.id.isEmpty() && node->id != compound.id)
         return false;
-    if (!compound.classes.isEmpty()) {
-        const QStringList classes = node->attribute("class").split(' ', Qt::SkipEmptyParts);
-        for (const QString &name : compound.classes)
-            if (!classes.contains(name))
-                return false;
-    }
+    for (const QString &name : compound.classes)
+        if (!node->classes.contains(name))
+            return false;
     for (const AttributeTest &test : compound.attributes) {
         QString value;
         if (!node->hasAttribute(test, &value))
@@ -491,17 +490,41 @@ bool isHidden(const QHash<QString, QString> &declared) {
     return false;
 }
 
+} // namespace
+
+class Rules {
+public:
+    struct Matched {
+        const Selector *selector;
+        const QList<Declaration> *declarations;
+        int order;
+    };
+    // Every rule, and by the last part of its selector: an id, a class, a
+    // tag, or anything at all.
+    std::vector<Matched> all;
+    QHash<QString, QList<int>> byId, byClass, byTag;
+    QList<int> anything;
+    // The sheets they came from, kept alive as long as the rules are.
+    QList<const Sheet *> sheets;
+
+    // The rules that could match an element, in no particular order: the
+    // cascade orders them itself.
+    QList<int> candidates(const Node *node) const {
+        QList<int> out = anything;
+        out += byTag.value(node->tag);
+        if (!node->id.isEmpty())
+            out += byId.value(node->id);
+        for (const QString &name : node->classes)
+            out += byClass.value(name);
+        return out;
+    }
+};
+
+namespace {
+
 class Restyler {
 public:
-    explicit Restyler(const QList<const Sheet *> &sheets) {
-        int order = 0;
-        for (const Sheet *sheet : sheets)
-            for (const Rule &rule : sheet->rules) {
-                for (const auto &selector : rule.selectors)
-                    m_rules.push_back({selector.get(), &rule.declarations, order});
-                ++order;
-            }
-    }
+    explicit Restyler(const Rules &rules) : m_rules(rules) {}
 
     QString render(const Node *body, QHash<QString, QString> *notes) {
         Computed root;
@@ -517,14 +540,20 @@ public:
     }
 
 private:
-    struct Matched {
-        const Selector *selector;
-        const QList<Declaration> *declarations;
-        int order;
-    };
-    std::vector<Matched> m_rules;
+    const Rules &m_rules;
+    // Each element's cascade, worked out once.
+    QHash<const Node *, QHash<QString, QString>> m_declared;
 
-    QHash<QString, QString> cascade(const Node *node) const {
+    QHash<QString, QString> cascade(const Node *node) {
+        const auto known = m_declared.constFind(node);
+        if (known != m_declared.cend())
+            return *known;
+        const QHash<QString, QString> found = computeCascade(node);
+        m_declared.insert(node, found);
+        return found;
+    }
+
+    QHash<QString, QString> computeCascade(const Node *node) const {
         struct Winner {
             bool important;
             int specificity;
@@ -566,7 +595,12 @@ private:
                 offer(d.property, d.value, d.important, specificity, order);
             }
         };
-        for (const Matched &rule : m_rules) {
+        QList<int> tried = m_rules.candidates(node);
+        // A rule listed under two of the element's classes is tried once.
+        std::sort(tried.begin(), tried.end());
+        tried.erase(std::unique(tried.begin(), tried.end()), tried.end());
+        for (const int index : std::as_const(tried)) {
+            const Rules::Matched &rule = m_rules.all[index];
             if (!matchesFrom(*rule.selector, 0, node))
                 continue;
             for (const Declaration &d : *rule.declarations)
@@ -671,7 +705,14 @@ private:
                 style << "text-indent: " + number(self.indentEm) + "qe";
             // Margins, with padding added in: Qt has no padding on a paragraph,
             // and a poem's indented lines are often written as padding.
+            // Lists are indented by Qt, a level at a time; the book's own
+            // indents on top of that pile up until a deep list is a column a
+            // letter wide.
+            static const QStringList lists = {"ul", "ol", "li", "dl", "dd"};
+            const bool list = lists.contains(tag);
             for (const QString edge : {"top", "right", "bottom", "left"}) {
+                if (list && (edge == QLatin1String("left") || edge == QLatin1String("right")))
+                    continue;
                 std::optional<double> total;
                 if (self.declared.contains(QString("margin-") + edge))
                     total = emLength(self.declared.value(QString("margin-") + edge), -10, 12);
@@ -931,7 +972,35 @@ void linkedSheets(const QByteArray &xhtml, QStringList *hrefs, QStringList *inli
     }
 }
 
+std::shared_ptr<const Rules> compile(const QList<const Sheet *> &sheets) {
+    auto rules = std::make_shared<Rules>();
+    rules->sheets = sheets;
+    int order = 0;
+    for (const Sheet *sheet : sheets)
+        for (const Rule &rule : sheet->rules) {
+            for (const auto &selector : rule.selectors) {
+                const int index = int(rules->all.size());
+                rules->all.push_back({selector.get(), &rule.declarations, order});
+                const Compound &last = selector->parts.first();
+                if (!last.id.isEmpty())
+                    rules->byId[last.id] << index;
+                else if (!last.classes.isEmpty())
+                    rules->byClass[last.classes.first()] << index;
+                else if (!last.tag.isEmpty())
+                    rules->byTag[last.tag] << index;
+                else
+                    rules->anything << index;
+            }
+            ++order;
+        }
+    return rules;
+}
+
 QString apply(const QByteArray &xhtml, const QList<const Sheet *> &sheets, QHash<QString, QString> *notes) {
+    return apply(xhtml, *compile(sheets), notes);
+}
+
+QString apply(const QByteArray &xhtml, const Rules &rules, QHash<QString, QString> *notes) {
     QXmlStreamReader xml(xhtml);
     Node root;
     Node *current = &root;
@@ -943,6 +1012,8 @@ QString apply(const QByteArray &xhtml, const QList<const Sheet *> &sheets, QHash
             node->tag = xml.name().toString().toLower();
             for (const auto &a : xml.attributes())
                 node->attributes.push_back({a.qualifiedName().toString(), a.value().toString()});
+            node->id = node->attribute("id");
+            node->classes = node->attribute("class").split(' ', Qt::SkipEmptyParts);
             node->parent = current;
             Node *raw = node.get();
             current->children.push_back(std::move(node));
@@ -968,7 +1039,7 @@ QString apply(const QByteArray &xhtml, const QList<const Sheet *> &sheets, QHash
     if (xml.hasError() || !body)
         return {};
     index(&root);
-    return Restyler(sheets).render(body, notes).trimmed();
+    return Restyler(rules).render(body, notes).trimmed();
 }
 
 QString sized(const QString &html, int pixelSize) {

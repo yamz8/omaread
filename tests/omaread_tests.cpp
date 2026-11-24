@@ -1604,7 +1604,8 @@ private slots:
         markdown += "## Two\nThe end.\n";
         backend.openFile(writeText(files.filePath("pages.md"), markdown.toUtf8()));
         QTRY_VERIFY(backend.isOpen());
-        QTRY_VERIFY(backend.pageCount() > 5);
+        // Counted for the layout the window settled on, not one on the way there.
+        QTRY_VERIFY(backend.pageCount() > 5 && !backend.countingPages());
         auto *view = item(window->contentItem(), "view");
         // Every Space is one page on, and the chapter's last screen its last page.
         int page = backend.pageAt(0, view->property("contentY").toDouble());

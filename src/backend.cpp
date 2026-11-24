@@ -1499,12 +1499,18 @@ void Backend::countPages() {
     if (m_pageCancel)
         *m_pageCancel = true;
     const int generation = ++m_pageGeneration;
-    if (!m_pages.isEmpty()) {
+    // Another book: its pages are counted from nothing. The same book laid
+    // out anew keeps showing its last count until the new one is in, rather
+    // than flashing "Counting pages…" at each resize.
+    const bool sameBook = m_book && m_pagesPath == m_book->path;
+    if (!sameBook && !m_pages.isEmpty()) {
         m_pages.clear();
         m_pagesBefore.clear();
-        emit pagesChanged();
     }
-    if (!m_book || m_book->paged() || m_page.width <= 0 || m_page.height <= 0)
+    m_pagesPath = m_book ? m_book->path : QString();
+    m_countingPages = m_book && !m_book->paged() && m_page.width > 0 && m_page.height > 0;
+    emit pagesChanged();
+    if (!m_countingPages)
         return;
     m_pageCancel = std::make_shared<std::atomic_bool>(false);
     auto *watcher = new QFutureWatcher<QList<Layout::Pages>>(this);
@@ -1513,6 +1519,7 @@ void Backend::countPages() {
         if (generation != m_pageGeneration)
             return;
         m_pages = watcher->result();
+        m_countingPages = false;
         m_pagesBefore.clear();
         int before = 0;
         for (const auto &section : std::as_const(m_pages)) {

@@ -15,6 +15,7 @@
 #include <QThread>
 #include <QUrl>
 #include <QXmlStreamReader>
+#include <QtConcurrent>
 
 #include <poppler-qt6.h>
 
@@ -24,6 +25,7 @@
 #include <algorithm>
 #include <cctype>
 #include <functional>
+#include <numeric>
 
 namespace {
 
@@ -142,13 +144,29 @@ QString resolve(const QString &from, const QString &href) {
 }
 
 QString attribute(const QString &tag, const QString &name) {
-    const QRegularExpression pattern("\\b" + QRegularExpression::escape(name)
-                                         + "\\s*=\\s*(\"([^\"]*)\"|'([^']*)')",
-                                     QRegularExpression::CaseInsensitiveOption);
-    const auto match = pattern.match(tag);
-    if (!match.hasMatch())
-        return {};
-    return match.captured(2).isNull() ? match.captured(3) : match.captured(2);
+    // A plain scan rather than a pattern made for each name: this is asked of
+    // every link and image in a book.
+    qsizetype at = 0;
+    while ((at = tag.indexOf(name, at, Qt::CaseInsensitive)) >= 0) {
+        const qsizetype end = at + name.size();
+        const bool starts = at == 0 || !(tag[at - 1].isLetterOrNumber() || tag[at - 1] == '-' || tag[at - 1] == ':');
+        qsizetype i = end;
+        while (i < tag.size() && tag[i].isSpace())
+            ++i;
+        if (starts && i < tag.size() && tag[i] == '=') {
+            ++i;
+            while (i < tag.size() && tag[i].isSpace())
+                ++i;
+            if (i < tag.size() && (tag[i] == '"' || tag[i] == '\'')) {
+                const QChar quote = tag[i];
+                const qsizetype close = tag.indexOf(quote, i + 1);
+                if (close > i)
+                    return tag.mid(i + 1, close - i - 1);
+            }
+        }
+        at = end;
+    }
+    return {};
 }
 
 QString decodeHtml(const QString &text) {
@@ -263,15 +281,29 @@ std::shared_ptr<Book> Book::load(const QString &path, int id, Error *error, cons
         return nullptr;
     }
     if (!book->paged()) {
-        static const QRegularExpression tag("<[^>]*>");
-        static const QRegularExpression word("[\\w\\p{L}][\\w\\p{L}'’-]*");
-        for (const QString &section : std::as_const(book->sections)) {
-            const QString text = book->kind == Kind::Epub ? QString(section).replace(tag, " ") : section;
+        // Words are runs of letters and digits, outside the markup's tags,
+        // counted a chapter to a core.
+        const bool markup = book->kind == Kind::Epub;
+        book->words = QtConcurrent::blockingMapped(book->sections, [markup](const QString &section) {
             int count = 0;
-            for (auto it = word.globalMatch(text); it.hasNext(); it.next())
-                ++count;
-            book->words << count;
-        }
+            bool inTag = false, inWord = false;
+            for (const QChar c : section) {
+                if (markup && c == '<') {
+                    inTag = true;
+                    inWord = false;
+                } else if (inTag) {
+                    if (c == '>')
+                        inTag = false;
+                } else if (c.isLetterOrNumber()) {
+                    if (!inWord)
+                        ++count;
+                    inWord = true;
+                } else if (!(inWord && (c == '\'' || c == QChar(0x2019) || c == '-' || c.isMark()))) {
+                    inWord = false;
+                }
+            }
+            return count;
+        });
         while (book->reading.size() < book->words.size())
             book->reading << true;
         // A book that is all title pages still has something to read.
@@ -662,8 +694,10 @@ bool Book::loadEpub(Error *error) {
         return out + text.mid(last);
     };
 
-    // Each stylesheet is read once, however many chapters link to it.
+    // Each stylesheet is read once, however many chapters link to it, and
+    // each set of them made ready once, however many chapters share it.
     QHash<QString, std::shared_ptr<Styling::Sheet>> sheets;
+    QHash<QString, std::shared_ptr<const Styling::Rules>> compiled;
     auto sheet = [&](const QString &path) {
         auto &cached = sheets[path];
         if (!cached)
@@ -671,6 +705,14 @@ bool Book::loadEpub(Error *error) {
         return cached;
     };
 
+    // Each chapter's sheets, made ready one after another, since those are
+    // shared between chapters; then the chapters themselves, all at once.
+    struct Prepared {
+        QByteArray xhtml;
+        std::shared_ptr<const Styling::Rules> rules;
+        QList<std::shared_ptr<Styling::Sheet>> held;
+    };
+    QList<Prepared> prepared;
     for (int index = 0; index < spine.size(); ++index) {
         const QString &chapter = spine[index];
         // The book's own styling, resolved onto each element. A chapter that
@@ -687,6 +729,34 @@ bool Book::loadEpub(Error *error) {
         QList<const Styling::Sheet *> cascade;
         for (const auto &s : std::as_const(held))
             cascade << s.get();
+        std::shared_ptr<const Styling::Rules> rules;
+        if (inlineCss.isEmpty()) {
+            const QString key = hrefs.join('\n') + '|' + QFileInfo(chapter).path();
+            auto &known = compiled[key];
+            if (!known)
+                known = Styling::compile(cascade);
+            rules = known;
+        } else {
+            rules = Styling::compile(cascade);
+        }
+        prepared << Prepared{xhtml, rules, held};
+    }
+    QHash<QString, int> spineIndex;
+    for (int index = 0; index < spine.size(); ++index)
+        spineIndex.insert(spine[index], index);
+
+    struct Done {
+        QString html;
+        QHash<QString, QString> notes;
+        bool read = true;
+    };
+    QList<int> order(spine.size());
+    std::iota(order.begin(), order.end(), 0);
+    const QList<Done> done = QtConcurrent::blockingMapped(order, [&](int index) {
+        const QString &chapter = spine[index];
+        const QByteArray &xhtml = prepared[index].xhtml;
+        const Styling::Rules &rules = *prepared[index].rules;
+        Done result;
         // Title pages, the imprint, the contents and the notes are there to
         // look at or look up, not to read through, as EPUB 3 marks them.
         {
@@ -700,10 +770,10 @@ bool Book::loadEpub(Error *error) {
                 for (const QString &kind : it.next().captured(1).split(' ', Qt::SkipEmptyParts))
                     if (aside.contains(kind))
                         read = false;
-            reading << read;
+            result.read = read;
         }
         QHash<QString, QString> chapterNotes;
-        QString html = Styling::apply(xhtml, cascade, &chapterNotes);
+        QString html = Styling::apply(xhtml, rules, &chapterNotes);
         const bool styled = !html.isNull();
         if (!styled) {
             html = decodeText(files.value(chapter));
@@ -744,7 +814,7 @@ bool Book::loadEpub(Error *error) {
                     return "<a" + kept + ">";
                 if (!QUrl(href).scheme().isEmpty())
                     return "<a href=\"" + escapeAttribute(href) + "\"" + kept + ">";
-                const int target = int(spine.indexOf(resolve(chapter, href)));
+                const int target = spineIndex.value(resolve(chapter, href), -1);
                 const QString fragment = QUrl(href).fragment(QUrl::FullyDecoded);
                 return target < 0 ? "<a" + kept + ">"
                                   : QString("<a href=\"omaread:%1%2\"%3>")
@@ -758,11 +828,16 @@ bool Book::loadEpub(Error *error) {
                 });
             return text;
         };
-        html = finish(html);
+        result.html = finish(html).trimmed();
         for (auto it = chapterNotes.cbegin(); it != chapterNotes.cend(); ++it)
-            notes.insert(QString("%1#%2").arg(index).arg(it.key()), finish(it.value()));
-        sections << html.trimmed();
+            result.notes.insert(QString("%1#%2").arg(index).arg(it.key()), finish(it.value()));
+        return result;
+    });
+    for (const Done &chapter : done) {
+        sections << chapter.html;
         aspects << 0;
+        reading << chapter.read;
+        notes.insert(chapter.notes);
     }
 
     // The table of contents: EPUB 3's nav document, or EPUB 2's NCX.

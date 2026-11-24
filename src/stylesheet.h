@@ -52,6 +52,13 @@ public:
 // back to where it's referred to, so the reader can show one in place.
 QString apply(const QByteArray &xhtml, const QList<const Sheet *> &sheets, QHash<QString, QString> *notes = nullptr);
 
+// Sheets made ready to apply, their rules sorted by what they can match, so
+// each element is tried against only those. A book's chapters mostly share
+// their sheets, and so share these.
+class Rules;
+std::shared_ptr<const Rules> compile(const QList<const Sheet *> &sheets);
+QString apply(const QByteArray &xhtml, const Rules &rules, QHash<QString, QString> *notes = nullptr);
+
 // The stylesheets a chapter links to and carries, as paths inside the book
 // relative to the chapter, and the text of its <style> elements.
 void linkedSheets(const QByteArray &xhtml, QStringList *hrefs, QStringList *inline_);
