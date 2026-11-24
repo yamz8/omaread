@@ -272,13 +272,22 @@ ApplicationWindow {
                 jump(backend.section + 1, 0)
             return
         }
+        // A flowing book turns a page at a time, as split into pages.
+        if (!backend.paged) {
+            const at = pageIndexAt(view.contentY)
+            if (at + 1 < pageTops.length) {
+                const to = pageTops[at + 1]
+                turn(1, () => view.contentY = to)
+            } else if (backend.section + 1 < backend.sectionCount) {
+                jump(backend.section + 1, 0)
+            }
+            return
+        }
         if (view.contentY + view.height >= view.contentHeight - 2) {
             if (backend.section + step < backend.sectionCount)
                 jump(backend.section + step, 0)
         } else {
-            const cut = backend.paged ? -1 : view.height - lineCover.bottom
-            const to = cut > lineCover.pad ? view.contentY + cut - lineCover.pad : view.contentY + screenStep()
-            turn(1, () => view.contentY = Math.min(to, view.contentHeight - view.height))
+            turn(1, () => view.contentY = Math.min(view.contentY + screenStep(), view.contentHeight - view.height))
         }
     }
     function backward() {
@@ -296,19 +305,50 @@ ApplicationWindow {
             }
             return
         }
+        if (!backend.paged) {
+            const at = pageIndexAt(view.contentY)
+            // Between pages, as a jump to a place can leave it: back to the
+            // start of this one; at its start, the one before.
+            const to = view.contentY > pageTops[at] + 1 ? pageTops[at] : at > 0 ? pageTops[at - 1] : -1
+            if (to >= 0)
+                turn(-1, () => view.contentY = to)
+            else if (backend.section > 0)
+                jump(backend.section - 1, 1)
+            return
+        }
         if (view.contentY <= 1) {
             if (backend.section > 0)
                 jump(Math.max(0, backend.section - step), 1)
         } else {
-            // The screen that ends where this one's first whole line begins.
-            const first = backend.paged ? -1 : view.contentY + lineCover.top
-            const to = first > view.contentY ? first + lineCover.pad - view.height : view.contentY - screenStep()
-            turn(-1, () => view.contentY = Math.max(0, Math.min(to, view.contentY - 1)))
+            turn(-1, () => view.contentY = Math.max(0, view.contentY - screenStep()))
         }
     }
+    // A PDF's or comic's step, which scrolls through pages fitted to the width.
     function screenStep() { return Math.max(40, view.height - 3 * readingSize) }
     function scroll(dy) {
+        // A flowing book has nothing to scroll: its pages turn.
+        if (!backend.paged) {
+            dy > 0 ? forward() : backward()
+            return
+        }
         view.contentY = Math.max(0, Math.min(view.contentY + dy, view.contentHeight - view.height))
+    }
+
+    // The chapter on screen in pages, as the page count splits it: where each
+    // starts, as the view's scroll offset.
+    property var pageTops: [0]
+    readonly property real lastPageTop: pageTops[pageTops.length - 1]
+    function measurePages() {
+        const tops = backend.paged ? [0] : backend.pageStarts(prose.textDocument, view.height)
+        if (JSON.stringify(tops) !== JSON.stringify(pageTops))
+            pageTops = tops
+    }
+    // The page a scroll offset lies on: the last that starts at or above it.
+    function pageIndexAt(y) {
+        let at = 0
+        while (at + 1 < pageTops.length && pageTops[at + 1] <= y + 1)
+            ++at
+        return at
     }
     // A book as a screen reader says it: title, author, and how far it's read.
     function bookDescription(book) {
@@ -545,7 +585,12 @@ ApplicationWindow {
         // the size they were at before a zoom.
         if (backend.paged)
             spreadRow.forceLayout()
+        if (!backend.paged)
+            measurePages()
         view.contentY = backend.position * Math.max(0, view.contentHeight - view.height)
+        // A flowing book shows a whole page, the one the place is on.
+        if (!backend.paged)
+            view.contentY = pageTops[pageIndexAt(view.contentY)]
         // Zoomed in on a page, the reader's place across it stays.
         view.contentX = backend.paged && zoom > 1 ? Math.max(0, Math.min(view.contentX, view.contentWidth - view.width))
                                                   : Math.max(0, (view.contentWidth - view.width) / 2)
@@ -553,6 +598,11 @@ ApplicationWindow {
     }
     // Brings a place in the text into view, a little below the top.
     function reveal(y) {
+        // In a flowing book, the page it's on.
+        if (!backend.paged) {
+            view.contentY = pageTops[pageIndexAt(y - prose.y)]
+            return
+        }
         view.contentY = Math.max(0, Math.min(y - 24, view.contentHeight - view.height))
     }
     function showTarget() {
@@ -715,7 +765,7 @@ ApplicationWindow {
     // on screen, Enter opens the one chosen, and Escape lets it go.
     property var chosenLink: null
     function linksOnScreen() {
-        const top = view.contentY - prose.y, bottom = top + view.height - lineCover.bottom
+        const top = view.contentY - prose.y + lineCover.top, bottom = view.contentY - prose.y + view.height - lineCover.bottom
         return backend.linksIn(prose.textDocument).filter(link => {
             const y = prose.positionToRectangle(link.start).y
             return y >= top && y < bottom
@@ -1285,35 +1335,19 @@ ApplicationWindow {
                             color: theme.background
                         }
 
-                        // A flowing book shows whole lines only: a line the window's
-                        // top or bottom edge cuts through is hidden behind the
-                        // page's color, and the next page turn starts with it. A
-                        // picture taller than that is never hidden.
+                        // A flowing book shows a page at a time: its margin at the top
+                        // hides the end of the page before, and below its last line,
+                        // the page after is hidden behind the page's color.
                         QtObject {
                             id: lineCover
-                            readonly property int pad: 24
-                            function cutAt(edge) {
-                                if (backend.paged || prose.length === 0)
-                                    return null
-                                const y = edge - prose.y
-                                if (y < 0 || y > prose.height)
-                                    return null
-                                const line = prose.positionToRectangle(prose.positionAt(0, y))
-                                return line.y < y && line.y + line.height > y ? line : null
-                            }
-                            // How much of the top and bottom of the view to cover.
-                            readonly property real top: {
-                                void (view.contentY + view.height + prose.height + prose.width)
-                                const line = cutAt(view.contentY)
-                                const cover = line ? prose.y + line.y + line.height - view.contentY : 0
-                                return cover < view.height * 0.3 ? cover : 0
-                            }
+                            readonly property real top: backend.paged ? 0 : prose.margin
                             readonly property real bottom: {
-                                void (view.contentY + view.height + prose.height + prose.width)
-                                const edge = view.contentY + view.height
-                                const line = cutAt(edge)
-                                const cover = line ? edge - prose.y - line.y : 0
-                                return cover < view.height * 0.3 ? cover : 0
+                                if (backend.paged)
+                                    return 0
+                                const at = win.pageIndexAt(view.contentY)
+                                if (at + 1 >= win.pageTops.length)
+                                    return prose.margin
+                                return Math.max(0, view.height - (prose.y + win.pageTops[at + 1] - view.contentY))
                             }
                         }
 
@@ -1327,8 +1361,12 @@ ApplicationWindow {
                             acceptedButtons: Qt.NoButton
                             boundsBehavior: Flickable.StopAtBounds
                             contentWidth: backend.paged ? Math.max(width, spreadRow.width + 2 * spreadRow.margin) : width
-                            contentHeight: backend.paged ? spreadRow.height + 2 * spreadRow.margin : prose.height + 2 * prose.margin
-                            ScrollBar.vertical: ScrollBar {}
+                            // A flowing book's last page is shown whole, the view's height below its start.
+                            contentHeight: backend.paged ? spreadRow.height + 2 * spreadRow.margin
+                                                         : Math.max(prose.height + 2 * prose.margin, win.lastPageTop + height)
+                            // A flowing book's pages turn rather than scroll.
+                            interactive: backend.paged
+                            ScrollBar.vertical: ScrollBar { policy: backend.paged ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
                             ScrollBar.horizontal: ScrollBar {}
 
                             // Ctrl with the wheel zooms a page around the pointer, or sets a
@@ -1341,6 +1379,35 @@ ApplicationWindow {
                                         win.zoomAt(Math.pow(1.0015, event.angleDelta.y), point.position.x, point.position.y)
                                     else if (event.angleDelta.y !== 0)
                                         win.resize(event.angleDelta.y > 0 ? 1 : -1)
+                                }
+                            }
+                            // The wheel and the touchpad turn a flowing book's pages: a
+                            // notch, or a swipe's worth, a page, and one turn per swipe.
+                            WheelHandler {
+                                acceptedModifiers: Qt.NoModifier
+                                enabled: !backend.paged
+                                target: null
+                                property real gathered: 0
+                                property double rested: 0
+                                onWheel: event => {
+                                    // A mouse wheel's notch turns a page.
+                                    if (event.pixelDelta.y === 0) {
+                                        if (event.angleDelta.y !== 0)
+                                            event.angleDelta.y < 0 ? win.forward() : win.backward()
+                                        return
+                                    }
+                                    // A touchpad's swipe turns one, however long it glides on.
+                                    const now = Date.now()
+                                    if (now - rested < 280) {
+                                        rested = now
+                                        return
+                                    }
+                                    gathered += event.pixelDelta.y
+                                    if (Math.abs(gathered) >= 60) {
+                                        gathered < 0 ? win.forward() : win.backward()
+                                        gathered = 0
+                                        rested = now
+                                    }
                                 }
                             }
                             PinchHandler {
@@ -1357,6 +1424,7 @@ ApplicationWindow {
                                 backend.position = contentY / (contentHeight - height)
                             onContentHeightChanged: Qt.callLater(win.restore)
                             onHeightChanged: Qt.callLater(win.restore)
+                            onWidthChanged: Qt.callLater(win.restore)
 
                             // A paged book's page, or two side by side, fitted to the
                             // window and then zoomed. Books keep their own reading
@@ -3110,7 +3178,7 @@ ApplicationWindow {
                             { keys: "Space  PgDn", action: qsTr("Next screen or page") },
                             { keys: "Shift+Space  PgUp", action: qsTr("Previous screen or page") },
                             { keys: "→  ←", action: qsTr("Next or previous, as the book reads") },
-                            { keys: "↓ ↑  J K", action: qsTr("Scroll") },
+                            { keys: "↓ ↑  J K", action: qsTr("Next or previous page; scroll a PDF or comic") },
                             { keys: "]  [  Home  End", action: qsTr("Next, previous, first or last section") },
                             { keys: "S", action: qsTr("Reading settings: typeface, spacing, column") },
                             { keys: "P", action: qsTr("Show time left, the page, or the percent read") },

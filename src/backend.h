@@ -345,6 +345,9 @@ public:
     // The page at a scroll offset in a section, counting from the book's
     // first, or 0 while the pages are still being counted.
     Q_INVOKABLE int pageAt(int section, double contentY) const;
+    // The chapter on screen split into pages, as the page count splits it:
+    // where each starts, as the view's scroll offset, in a view this tall.
+    Q_INVOKABLE QVariantList pageStarts(QQuickTextDocument *document, double viewHeight) const;
     // What a page holds, for skimming: {section, position, chapter, text},
     // its first words. Pages count from 1; a book whose pages are still being
     // counted, and a PDF or comic, number its sections instead.

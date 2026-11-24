@@ -32,10 +32,8 @@ struct Page {
     }
 };
 
-// The margin above and below a chapter's text in the view, and how far above
-// the line a page turn cut off the next page starts. The window uses the same.
+// The margin above and below the text on every page. The window uses the same.
 constexpr int textMargin = 40;
-constexpr int turnPad = 24;
 
 // A section's pages, as the window shows them: where each page starts, as a
 // scroll offset in the view and as the first character on it, and how tall
@@ -46,9 +44,12 @@ struct Pages {
     double height = 0;
 };
 
-// Every section's pages. A page turn starts the next page at the line the
-// last one cut off, so these are the places Space stops at. Empty when
-// cancelled.
+// A chapter's pages, as laid out at its width, in a view this tall.
+Pages split(QTextDocument &document, double view);
+
+// Every section's pages: the whole lines that fit between the margins, the
+// next page starting with the first line that didn't. These are the places
+// a page turn goes to. Empty when cancelled.
 QList<Pages> paginate(const Book &book, const Page &page, const std::atomic_bool *cancel = nullptr);
 
 } // namespace Layout

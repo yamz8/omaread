@@ -1681,6 +1681,41 @@ private slots:
         }
         QCOMPARE(page, backend.pageCount() - 1);
         QCOMPARE(backend.pageAt(1, 0), backend.pageCount());
+
+        // The pages are a book's: the window splits the chapter as the count
+        // does, every turn lands on a page's start, which shows its first line
+        // a margin below the top, and nothing scrolls between them.
+        backend.goTo(0, 0);
+        QTRY_COMPARE(view->property("contentY").toDouble(), 0.0);
+        QTRY_COMPARE(window->property("pageTops").toList().size(), backend.pageCount() - 1);
+        const QVariantList tops = window->property("pageTops").toList();
+        auto *prose = item(window->contentItem(), "prose");
+        for (int i = 1; i < 4; ++i) {
+            QTest::keyClick(window, Qt::Key_Space);
+            QTRY_COMPARE(view->property("contentY").toDouble(), tops[i].toDouble());
+            // The page's first line is one margin, the prose's own offset, below the top.
+            QCOMPARE(prose->y() + tops[i].toDouble() - view->property("contentY").toDouble(), prose->y());
+        }
+        // The arrow keys and the mouse wheel turn pages too, a notch a page.
+        QTest::keyClick(window, Qt::Key_Down);
+        QTRY_COMPARE(view->property("contentY").toDouble(), tops[4].toDouble());
+        QTest::keyClick(window, Qt::Key_Up);
+        QTRY_COMPARE(view->property("contentY").toDouble(), tops[3].toDouble());
+        const QPointF middle(window->width() / 2.0, window->height() / 2.0);
+        QWheelEvent wheel(middle, window->mapToGlobal(middle), QPoint(), QPoint(0, -120), Qt::NoButton,
+                          Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(window, &wheel);
+        QTRY_COMPARE(view->property("contentY").toDouble(), tops[4].toDouble());
+        QWheelEvent back(middle, window->mapToGlobal(middle), QPoint(), QPoint(0, 120), Qt::NoButton,
+                         Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(window, &back);
+        QTRY_COMPARE(view->property("contentY").toDouble(), tops[3].toDouble());
+        // Back from a chapter's first page is the last page of the one before.
+        QTest::keyClick(window, Qt::Key_End);
+        QTRY_COMPARE(backend.section(), 1);
+        QTest::keyClick(window, Qt::Key_Left);
+        QTRY_COMPARE(backend.section(), 0);
+        QTRY_COMPARE(view->property("contentY").toDouble(), tops.last().toDouble());
     }
 
     void windowHighlightsChosenWords() {

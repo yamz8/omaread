@@ -14,7 +14,7 @@ omaread open book.epub
 
 An EPUB is set the way the book itself sets it, from its own stylesheet: first-line indents, small capitals, centered headings, scene breaks, epigraphs, and the indented lines of poems. Its colors and typeface are left out, so every book follows the theme and your reading settings: `S` chooses serif or sans, the text size, line spacing, column width, and ragged or justified lines. Title pages drawn in black ink take the theme's text color.
 
-`Space` turns to the next screen, starting with the line the last one cut off, so the window only ever shows whole lines; `A` chooses how pages turn. A footnote opens over the bottom of the page when its number is chosen, so reading never leaves the page.
+A book is read in pages, as in Kindle: each holds the whole lines that fit between the same margins, and the next begins with the line that didn't. `Space`, the arrow keys, a notch of the mouse wheel or a swipe on the touchpad turns exactly one page, and back from a chapter's first page is the last page of the one before; `A` chooses how pages turn. A footnote opens over the bottom of the page when its number is chosen, so reading never leaves the page.
 
 The footer names the part and chapter, "Part II · V", and tells the time left in the chapter at your own reading pace, which it learns as you read. `P` switches it to the time left in the book, the page, or the percent read. Pages are counted as `Space` turns them, at your window's size and settings, and progress counts only the book's own text, by its words, so title pages and endnotes don't move it.
 
@@ -56,7 +56,7 @@ omaread skill install               # teach coding agents to use these commands
 | --- | --- |
 | `Space` `PgDn` / `Shift+Space` `PgUp` | Next or previous screen |
 | `→` `←` | Next or previous screen; the other way round in a book read right to left |
-| `↓` `↑` `J` `K` | Scroll |
+| `↓` `↑` `J` `K` | Next or previous page; scroll a PDF or comic |
 | `]` `[` `Home` `End` | Next, previous, first or last section |
 | `S` | Reading settings: typeface, text size, line spacing, column, alignment |
 | `P` | Time left in the chapter or book, the page, or the percent read |

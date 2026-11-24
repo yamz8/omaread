@@ -81,6 +81,48 @@ void typeset(QTextDocument *text, double lineHeight, double paragraphGap, bool j
     cursor.endEditBlock();
 }
 
+Pages split(QTextDocument &document, double view) {
+    std::vector<Line> lines;
+    auto *layout = document.documentLayout();
+    for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
+        const QRectF box = layout->blockBoundingRect(block);
+        const QTextLayout *lines_ = block.layout();
+        for (int i = 0; lines_ && i < lines_->lineCount(); ++i) {
+            const QTextLine line = lines_->lineAt(i);
+            lines.push_back({box.top() + line.y(), line.height(), block.position() + line.textStart()});
+        }
+    }
+    const double textHeight = document.size().height();
+    const double content = textHeight + 2 * textMargin;
+
+    // Pages as a book has them: each holds the whole lines that fit
+    // between a margin at its top and one at its bottom, and the next
+    // starts with the first line that didn't. A line taller than a page,
+    // a picture, has a page to itself. In the view, a page starting at
+    // the text's y is shown with the view scrolled to y, which puts that
+    // line one margin below the view's top.
+    const double room = std::max(40.0, view - 2.0 * textMargin);
+    QList<double> starts{0};
+    QList<int> characters{lines.empty() ? 0 : lines.front().character};
+    size_t first = 0;
+    while (first < lines.size()) {
+        const double top = lines[first].top, edge = top + room;
+        size_t next = first + 1;
+        while (next < lines.size() && lines[next].top + lines[next].height <= edge + 0.5)
+            ++next;
+        // Lines sharing a row, as a picture beside text can, go together.
+        while (next < lines.size() && lines[next].top < lines[next - 1].top + 0.5)
+            ++next;
+        if (next >= lines.size())
+            break;
+        starts << lines[next].top;
+        characters << lines[next].character;
+        first = next;
+    }
+    // The last page is shown whole, with room below it to the view's foot.
+    return Pages{starts, characters, std::max(content, starts.last() + view)};
+}
+
 QList<Pages> paginate(const Book &book, const Page &page, const std::atomic_bool *cancel) {
     QList<Pages> pages;
     if (book.paged() || page.width <= 0 || page.height <= 0 || page.pixelSize <= 0)
@@ -88,8 +130,6 @@ QList<Pages> paginate(const Book &book, const Page &page, const std::atomic_bool
     QFont font(page.family);
     font.setPixelSize(page.pixelSize);
     const double view = page.height;
-    // As the window's screenStep(), for a page whose bottom edge cuts no line.
-    const double screenStep = std::max(40.0, view - 3.0 * page.pixelSize);
     const bool markdown = book.kind == Book::Kind::Markdown;
 
     for (int section = 0; section < book.sections.size(); ++section) {
@@ -113,58 +153,7 @@ QList<Pages> paginate(const Book &book, const Page &page, const std::atomic_bool
         typeset(&document, page.lineHeight, std::round(page.pixelSize * 0.75), page.justify, markdown);
         document.setTextWidth(page.width);
 
-        std::vector<Line> lines;
-        auto *layout = document.documentLayout();
-        for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
-            const QRectF box = layout->blockBoundingRect(block);
-            const QTextLayout *lines_ = block.layout();
-            for (int i = 0; lines_ && i < lines_->lineCount(); ++i) {
-                const QTextLine line = lines_->lineAt(i);
-                lines.push_back({box.top() + line.y(), line.height(), block.position() + line.textStart()});
-            }
-        }
-        const double textHeight = document.size().height();
-        const double content = textHeight + 2 * textMargin;
-
-        // Space's walk through the chapter: the next page starts where the
-        // line the bottom edge cuts begins, less the turn's pad, unless no line
-        // is cut or the cut one is too tall to hide (a picture).
-        // The first character on the page starting at a scroll offset: on the
-        // first line whose top shows below the page's top margin.
-        auto firstCharacter = [&](double offset) {
-            const double y = offset - textMargin;
-            const auto it = std::lower_bound(lines.begin(), lines.end(), y - 1,
-                                             [](const Line &line, double at) { return line.top < at; });
-            return it == lines.end() ? (lines.empty() ? 0 : lines.back().character) : it->character;
-        };
-        QList<double> starts{0};
-        double top = 0;
-        while (top + view < content - 2) {
-            const double edge = top + view - textMargin;   // in the text's own coordinates
-            double cover = 0;
-            if (edge >= 0 && edge <= textHeight) {
-                const auto it = std::upper_bound(lines.begin(), lines.end(), edge,
-                                                 [](double y, const Line &line) { return y < line.top; });
-                if (it != lines.begin()) {
-                    const Line &line = *std::prev(it);
-                    if (line.top < edge && line.top + line.height > edge)
-                        cover = edge - line.top;
-                }
-            }
-            if (cover >= view * 0.3)
-                cover = 0;
-            const double cut = view - cover;
-            double next = cut > turnPad ? top + cut - turnPad : top + screenStep;
-            next = std::min(next, content - view);
-            if (next <= top + 1)
-                break;
-            starts << next;
-            top = next;
-        }
-        Pages section_{starts, {}, content};
-        for (const double start : std::as_const(starts))
-            section_.characters << firstCharacter(start);
-        pages << section_;
+        pages << split(document, view);
     }
     return pages;
 }

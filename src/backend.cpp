@@ -1678,6 +1678,15 @@ void Backend::goToPage(int page) {
     goTo(preview.value("section").toInt(), preview.value("position").toDouble());
 }
 
+QVariantList Backend::pageStarts(QQuickTextDocument *document, double viewHeight) const {
+    QVariantList starts;
+    if (!document || !document->textDocument() || viewHeight <= 0)
+        return {0.0};
+    for (const double top : Layout::split(*document->textDocument(), viewHeight).tops)
+        starts << top;
+    return starts;
+}
+
 int Backend::pageAt(int section, double contentY) const {
     if (section < 0 || section >= m_pages.size() || m_pages[section].tops.isEmpty())
         return 0;
