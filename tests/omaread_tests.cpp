@@ -2102,6 +2102,15 @@ private slots:
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!notebook->property("visible").toBool());
         window->setWidth(wide);
+        // The book's title, at the footer's same side, closes and opens it by mouse.
+        auto *title = item(window->contentItem(), "footerTitle");
+        QVERIFY(title);
+        const QPoint onTitle = title->mapToScene(QPointF(10, title->height() / 2)).toPoint();
+        QTest::mouseClick(window, Qt::LeftButton, {}, onTitle);
+        QTRY_VERIFY(!contents->property("visible").toBool());
+        QTest::mouseClick(window, Qt::LeftButton, {}, item(window->contentItem(), "footerTitle")
+                                                          ->mapToScene(QPointF(10, title->height() / 2)).toPoint());
+        QTRY_VERIFY(contents->property("opened").toBool());
         // Escape closes it, gives the page its keys back, and is remembered.
         QTest::keyClick(window, Qt::Key_Escape);
         QTRY_VERIFY(!contents->property("visible").toBool());

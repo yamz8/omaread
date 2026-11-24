@@ -1745,14 +1745,29 @@ ApplicationWindow {
                     spacing: 16
 
                     Label {
+                        objectName: "footerTitle"
                         Layout.fillWidth: true
                         Layout.preferredWidth: 2
                         // Explicit, so mirroring moves it to the right in a
                         // right-to-left language whatever the title's own script.
                         horizontalAlignment: Text.AlignLeft
                         text: backend.title
-                        color: win.muted
+                        color: titleArea.containsMouse ? theme.foreground : win.muted
                         elide: Text.ElideRight
+                        // A click opens or closes the contents, at the same side, as T does.
+                        MouseArea {
+                            id: titleArea
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: Math.min(parent.contentWidth, parent.width)
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: contents.toggle()
+                            ToolTip.visible: containsMouse
+                            ToolTip.delay: 600
+                            ToolTip.text: qsTr("Contents  (T)")
+                        }
                     }
                     Label {
                         Layout.fillWidth: true
