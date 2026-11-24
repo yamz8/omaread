@@ -22,7 +22,27 @@ ApplicationWindow {
     Material.foreground: theme.foreground
 
     readonly property bool rightToLeft: Qt.application.layoutDirection === Qt.RightToLeft
-    readonly property color muted: Qt.rgba(theme.foreground.r, theme.foreground.g, theme.foreground.b, 0.6)
+    // Quieter text, for labels and the footer: the text color toward the
+    // page's, but never so far that it reads below 4.5:1 against it, the
+    // contrast WCAG asks of text. Some themes' text needs most of its strength.
+    readonly property color muted: {
+        const fg = theme.foreground, bg = theme.background
+        for (let strength = 0.6; strength < 1; strength += 0.05) {
+            const c = Qt.rgba(fg.r * strength + bg.r * (1 - strength), fg.g * strength + bg.g * (1 - strength),
+                              fg.b * strength + bg.b * (1 - strength), 1)
+            if (contrast(c, bg) >= 4.5)
+                return c
+        }
+        return fg
+    }
+    function luminance(c) {
+        const f = v => v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)
+        return 0.2126 * f(c.r) + 0.7152 * f(c.g) + 0.0722 * f(c.b)
+    }
+    function contrast(a, b) {
+        const x = luminance(a), y = luminance(b)
+        return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05)
+    }
     readonly property int uiSize: font.pixelSize
     // The reading text, as a multiple of the desktop's text size.
     readonly property int readingSize: Math.round(theme.textSize * backend.textScale)
@@ -234,6 +254,22 @@ ApplicationWindow {
     function scroll(dy) {
         view.contentY = Math.max(0, Math.min(view.contentY + dy, view.contentHeight - view.height))
     }
+    // A book as a screen reader says it: title, author, and how far it's read.
+    function bookDescription(book) {
+        const parts = [book.title]
+        if (book.author)
+            parts.push(book.author)
+        parts.push(book.finished ? qsTr("Finished") : !book.started ? qsTr("Not started")
+                                 : qsTr("%1 read").arg(percent(book.progress)))
+        if (!book.exists)
+            parts.push(qsTr("Missing"))
+        return parts.join(", ")
+    }
+    function colorName(name) {
+        return name === "yellow" ? qsTr("Yellow") : name === "green" ? qsTr("Green")
+             : name === "blue" ? qsTr("Blue") : qsTr("Pink")
+    }
+
     // The library's books as shown: the filter chosen, the search typed, and
     // the order chosen.
     function inFilter(book, filter) {
@@ -547,7 +583,9 @@ ApplicationWindow {
         const paint = {}
         for (const name of ["yellow", "green", "blue", "pink"]) {
             const c = highlightInk(name)
-            paint[name] = Qt.tint(theme.background, Qt.rgba(c.r, c.g, c.b, theme.light ? 0.45 : 0.38))
+            // Light enough that the text on it reads at 4.5:1 or better in
+            // every theme Omarchy ships.
+            paint[name] = Qt.tint(theme.background, Qt.rgba(c.r, c.g, c.b, theme.light ? 0.32 : 0.28))
         }
         return paint
     }
@@ -876,6 +914,10 @@ ApplicationWindow {
                                 id: chip
                                 required property var modelData
                                 readonly property bool chosen: backend.libraryFilter === modelData.key
+                                Accessible.role: Accessible.RadioButton
+                                Accessible.name: chipLabel.text
+                                Accessible.checked: chosen
+                                Accessible.onPressAction: backend.libraryFilter = modelData.key
                                 implicitWidth: chipLabel.implicitWidth + 24
                                 implicitHeight: Math.round(win.uiSize * 2.1)
                                 radius: Math.min(4, theme.radius)
@@ -936,6 +978,11 @@ ApplicationWindow {
                                 width: GridView.view.cellWidth
                                 height: GridView.view.cellHeight
                                 readonly property bool current: GridView.isCurrentItem
+                                // Read out as a screen reader meets it: the book, and how far it's read.
+                                Accessible.role: Accessible.ListItem
+                                Accessible.name: win.bookDescription(card.modelData)
+                                Accessible.selected: current
+                                Accessible.onPressAction: backend.openFile(card.modelData.path)
 
                                 Rectangle {
                                     anchors.fill: parent
@@ -998,6 +1045,10 @@ ApplicationWindow {
                                 height: Math.round(win.uiSize * 5)
                                 radius: Math.min(4, theme.radius)
                                 color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
+                                Accessible.role: Accessible.ListItem
+                                Accessible.name: win.bookDescription(row.modelData)
+                                Accessible.selected: ListView.isCurrentItem
+                                Accessible.onPressAction: backend.openFile(row.modelData.path)
 
                                 RowLayout {
                                     anchors.fill: parent
@@ -1279,6 +1330,7 @@ ApplicationWindow {
                             TextEdit {
                                 id: prose
                                 objectName: "prose"
+                                Accessible.name: backend.chapterLabel || backend.title
                                 readonly property int margin: 40
                                 visible: !backend.paged
                                 x: (view.width - width) / 2
@@ -1490,6 +1542,9 @@ ApplicationWindow {
                             height: Math.round(win.uiSize * 3.6)
                             radius: Math.min(4, theme.radius)
                             color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
+                            Accessible.role: Accessible.ListItem
+                            Accessible.name: hitRow.modelData.context
+                            Accessible.onPressAction: backend.chooseHit(hitRow.index)
                             function escaped(text) { return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") }
 
                             ColumnLayout {
@@ -1735,6 +1790,10 @@ ApplicationWindow {
                     implicitHeight: 26
                     radius: 13
                     color: win.highlightPaint[modelData]
+                    Accessible.role: Accessible.Button
+                    Accessible.name: win.colorName(modelData)
+                    Accessible.checked: chosen
+                    Accessible.onPressAction: { win.highlightSelection(swatch.modelData); selectionBar.close() }
                     border.width: chosen ? 3 : 1
                     border.color: chosen ? win.highlightInk(modelData) : Qt.rgba(theme.foreground.r, theme.foreground.g, theme.foreground.b, 0.3)
                     MouseArea {
@@ -2058,6 +2117,10 @@ ApplicationWindow {
                                     readonly property bool isSize: settingRow.modelData.key === "size"
                                     readonly property bool chosen: !isSize && settings.current(settingRow.modelData.key) === modelData.value
                                     readonly property bool readout: isSize && modelData.value === 0
+                                    Accessible.role: readout ? Accessible.StaticText : Accessible.RadioButton
+                                    Accessible.name: settingRow.modelData.label + ": " + choice.modelData.label
+                                    Accessible.checked: chosen
+                                    Accessible.onPressAction: if (!readout) settings.choose(settingRow.modelData.key, choice.modelData.value)
                                     implicitWidth: Math.max(Math.round(win.uiSize * 4.2), choiceLabel.implicitWidth + 24)
                                     implicitHeight: Math.round(win.uiSize * 2)
                                     radius: Math.min(4, theme.radius)
@@ -2357,6 +2420,10 @@ ApplicationWindow {
                     height: Math.round(win.uiSize * 2.6)
                     radius: Math.min(4, theme.radius)
                     color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: chapter.modelData.title + (contents.pageOf(chapter.modelData.section)
+                                     ? ", " + qsTr("page %1").arg(contents.pageOf(chapter.modelData.section)) : "")
+                    Accessible.onPressAction: contents.choose(chapter.index)
 
                     RowLayout {
                         anchors.fill: parent
@@ -2415,6 +2482,9 @@ ApplicationWindow {
                     height: Math.round(win.uiSize * 3.8)
                     radius: Math.min(4, theme.radius)
                     color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: (mark.modelData.chapter ? mark.modelData.chapter + ": " : "") + mark.modelData.text
+                    Accessible.onPressAction: contents.chooseMark(mark.index)
 
                     ColumnLayout {
                         anchors.fill: parent
@@ -2482,6 +2552,9 @@ ApplicationWindow {
                     height: highlightColumn.implicitHeight + 16
                     radius: Math.min(4, theme.radius)
                     color: ListView.isCurrentItem ? theme.colors.selection : "transparent"
+                    Accessible.role: Accessible.ListItem
+                    Accessible.name: noteRow.modelData.text + (noteRow.modelData.note ? ". " + qsTr("Note: %1").arg(noteRow.modelData.note) : "")
+                    Accessible.onPressAction: contents.chooseNote(noteRow.index)
 
                     // The highlight's color, down its side.
                     Rectangle {

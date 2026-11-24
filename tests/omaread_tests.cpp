@@ -15,6 +15,7 @@
 #include <QTextBlock>
 #include <QtTest>
 
+#include <QAccessible>
 #include <QBuffer>
 #include <QPainter>
 #include <QPdfWriter>
@@ -2111,6 +2112,14 @@ private slots:
         QVERIFY(!backend.isOpen());
         auto *shelf = item(window->contentItem(), "shelf");
         QTRY_COMPARE(shelf->property("count").toInt(), 3);
+        // A screen reader hears each book as its title and how far it's read,
+        // and each filter as a choice, said to be chosen or not.
+        QQuickItem *card = shelf->property("currentItem").value<QQuickItem *>();
+        QVERIFY(card);
+        QAccessibleInterface *cardAccess = QAccessible::queryAccessibleInterface(card);
+        QVERIFY(cardAccess);
+        QVERIFY(cardAccess->text(QAccessible::Name).contains("%"));
+        QCOMPARE(cardAccess->role(), QAccessible::ListItem);
         // The covers go left to right; Right twice is the third book.
         QTest::keyClick(window, Qt::Key_Right);
         QTest::keyClick(window, Qt::Key_Right);

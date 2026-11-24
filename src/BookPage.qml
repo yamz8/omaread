@@ -5,6 +5,8 @@ import QtQuick.Window
 // it, and an area dragged across it to copy its words.
 Item {
     id: sheet
+    Accessible.role: Accessible.Graphic
+    Accessible.name: qsTr("Page %1").arg(page + 1)
 
     required property int page
     // "/<background>/<foreground>" to color the page like the theme, or "".
